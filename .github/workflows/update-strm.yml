@@ -3,7 +3,7 @@ name: Build Real-Debrid STRM Library (Safe Mode)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"   # every hour
+    - cron: "0 * * * *"   # Run every hour
 
 permissions:
   contents: write
@@ -16,132 +16,192 @@ jobs:
 
     steps:
 
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Prepare folders
+      - name: Prepare Output Folders
         run: |
           set +e
           rm -rf strm || true
           mkdir -p strm/Movies || true
           mkdir -p "strm/TV Shows" || true
 
-      - name: Fetch RD torrents list
+      - name: Fetch Real-Debrid Torrents
         run: |
-          set +e
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
-            > torrents.json || true
+            > torrents.json
 
-          echo "Torrent list:"
-          cat torrents.json || true
+          echo "Fetched torrents:"
+          cat torrents.json
 
-      - name: Build STRM Files (safe, last 15 days only)
+
+      ##############################################
+      # BUILD STRM FILES (SAFE MODE, LAST 15 DAYS)
+      ##############################################
+
+      - name: Build STRM Files
         run: |
           set +e
-
-          # Cutoff time for 15 days
           CUTOFF=$(date -d "15 days ago" +%s)
 
           jq -c '.[]?' torrents.json | while read TORRENT; do
-
-            ID=$(echo "$TORRENT" | jq -r '.id' 2>/dev/null || true)
-            NAME=$(echo "$TORRENT" | jq -r '.filename' 2>/dev/null || true)
-            ADDED=$(echo "$TORRENT" | jq -r '.added' 2>/dev/null || true)
+            ID=$(echo "$TORRENT" | jq -r '.id')
+            NAME=$(echo "$TORRENT" | jq -r '.filename')
+            ADDED=$(echo "$TORRENT" | jq -r '.added')
 
             if [ -z "$ID" ] || [ -z "$ADDED" ]; then
-              echo "Skipping malformed torrent..."
+              echo "Skipping malformed torrent"
               continue
             fi
 
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
-
             if [ "$ADDED_EPOCH" -lt "$CUTOFF" ]; then
               echo "Skipping old torrent: $NAME"
               continue
             fi
 
             echo ""
-            echo "Processing recent torrent: $NAME"
+            echo "Processing: $NAME"
 
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
-              > detail.json || true
+              > detail.json
 
             FILECOUNT=$(jq '.files | length' detail.json 2>/dev/null || echo 0)
-
             if [ "$FILECOUNT" -lt 1 ]; then
-              echo "No files in this torrent — skipping."
               continue
             fi
 
             for i in $(seq 0 $(($FILECOUNT - 1))); do
 
-              FILE=$(jq -r ".files[$i].path" detail.json 2>/dev/null || echo "")
-              LINK=$(jq -r ".links[$i]?" detail.json 2>/dev/null || echo "")
+              FILE=$(jq -r ".files[$i].path" detail.json)
+              LINK=$(jq -r ".links[$i]?" detail.json)
 
-              BASENAME=$(basename "$FILE" 2>/dev/null || echo "")
+              BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
 
-              if [ -z "$LINK" ] || [ "$LINK" = "null" ]; then
-                echo "Skipping (no RD link): $BASENAME"
+              if [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm|m4v)$ ]]; then
                 continue
               fi
 
-              if [[ ! "$EXT" =~ ^(mkv|mp4|mov|avi|webm|m4v)$ ]]; then
-                echo "Skipping non-video: $BASENAME"
+              if [ -z "$LINK" ] || [ "$LINK" = "null" ]; then
                 continue
               fi
 
               echo "→ Valid video: $BASENAME"
 
-              #
-              # TV EPISODES (safe)
-              #
+              ###################################
+              # TV EPISODE PATTERN
+              ###################################
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
 
-                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/[._]/ /g' || true)
+                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//;s/[._]/ /g')
 
-                RAWSEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S || echo "1")
-                RAWEp=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E || echo "1")
+                RAWSEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S)
+                RAWEp=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E)
 
                 SEASON_DEC=$((10#$RAWSEASON))
                 EP_DEC=$((10#$RAWEp))
 
-                mkdir -p "strm/TV Shows/$SHOW/Season $SEASON_DEC" || true
+                mkdir -p "strm/TV Shows/$SHOW/Season $SEASON_DEC"
 
                 OUT="strm/TV Shows/$SHOW/Season $SEASON_DEC/$SHOW S$(printf '%02d' $SEASON_DEC)E$(printf '%02d' $EP_DEC).strm"
 
-                echo "$LINK" > "$OUT" || true
-                echo "Created TV STRM: $OUT"
+                echo "$LINK" > "$OUT"
+                echo "Created TV: $OUT"
 
                 continue
               fi
 
-              #
-              # MOVIES (safe)
-              #
-              TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/[._]/ /g' || true)
+              ###################################
+              # MOVIE
+              ###################################
+              TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//;s/[._]/ /g')
               YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}' || echo "")
 
               OUT="strm/Movies/$TITLE ($YEAR).strm"
-
-              echo "$LINK" > "$OUT" || true
-              echo "Created Movie STRM: $OUT"
+              echo "$LINK" > "$OUT"
+              echo "Created Movie: $OUT"
 
             done
 
           done
 
-      - name: Create index.html (required for GitHub Pages)
+
+      ##############################################
+      # BUILD INDEX.HTML (MOVIES + SHOWS + SEASONS)
+      ##############################################
+
+      - name: Generate Folder Indexes
         run: |
+          # Root index
           echo "<h1>Real-Debrid STRM Library</h1>" > strm/index.html
           echo "<ul>" >> strm/index.html
           echo "<li><a href='Movies/'>Movies</a></li>" >> strm/index.html
           echo "<li><a href='TV Shows/'>TV Shows</a></li>" >> strm/index.html
           echo "</ul>" >> strm/index.html
 
-      - name: Upload to Pages
+          ############################
+          # Movies index
+          ############################
+          echo "<h2>Movies</h2>" > strm/Movies/index.html
+          echo "<ul>" >> strm/Movies/index.html
+          for f in strm/Movies/*.strm; do
+            [ -e "$f" ] || continue
+            FILE=$(basename "$f")
+            echo "<li><a href=\"$FILE\">$FILE</a></li>" >> strm/Movies/index.html
+          done
+          echo "</ul>" >> strm/Movies/index.html
+
+          ############################
+          # TV Shows index
+          ############################
+          echo "<h2>TV Shows</h2>" > "strm/TV Shows/index.html"
+          echo "<ul>" >> "strm/TV Shows/index.html"
+
+          for show in "strm/TV Shows"/*; do
+            [ -d "$show" ] || continue
+            SHOW_NAME=$(basename "$show")
+            echo "<li><a href=\"$SHOW_NAME/\">$SHOW_NAME</a></li>" >> "strm/TV Shows/index.html"
+
+            # Create show-level index
+            mkdir -p "$show"
+            echo "<h2>$SHOW_NAME</h2>" > "$show/index.html"
+            echo "<ul>" >> "$show/index.html"
+
+            for season in "$show"/Season*; do
+              [ -d "$season" ] || continue
+              SEASON_NAME=$(basename "$season")
+              echo "<li><a href=\"$SEASON_NAME/\">$SEASON_NAME</a></li>" >> "$show/index.html"
+
+              # Create season-level index
+              mkdir -p "$season"
+              echo "<h2>$SEASON_NAME</h2>" > "$season/index.html"
+              echo "<ul>" >> "$season/index.html"
+
+              for ep in "$season"/*.strm; do
+                [ -e "$ep" ] || continue
+                EP=$(basename "$ep")
+                echo "<li><a href=\"$EP\">$EP</a></li>" >> "$season/index.html"
+              done
+
+              echo "</ul>" >> "$season/index.html"
+
+            done
+
+            echo "</ul>" >> "$show/index.html"
+
+          done
+
+          echo "</ul>" >> "strm/TV Shows/index.html"
+
+
+      ##############################################
+      # DEPLOY TO GITHUB PAGES
+      ##############################################
+
+      - name: Upload for GitHub Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
