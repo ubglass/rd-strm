@@ -1,37 +1,36 @@
-name: RD STRM Builder (Final No-Function Version)
+name: RD STRM Builder (Final Branch Commit Version)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 * * * *"   # runs every hour
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout Repo
+      - name: Checkout default branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       ####################################################################
-      # CLEAN DEPLOY ROOT
+      # CREATE CLEAN OUTPUT FOLDER
       ####################################################################
-      - name: Prepare deploy root
+      - name: Prepare site_root
         run: |
           rm -rf site_root || true
           mkdir -p site_root/Movies
           mkdir -p site_root/TV_Shows
 
       ####################################################################
-      # DISABLE JEKYLL
+      # DISABLE JEKYLL (REQUIRED FOR KODI DIRECTORY VIEW)
       ####################################################################
-      - name: Add _config.yml
+      - name: Add config
         run: |
           echo "theme: null" > site_root/_config.yml
           echo "markdown: kramdown" >> site_root/_config.yml
@@ -39,24 +38,25 @@ jobs:
       ####################################################################
       # ROOT INDEX
       ####################################################################
-      - name: Root index
+      - name: Add root index
         run: |
-          echo "<h1>RD Library</h1>" > site_root/index.html
+          echo "<h1>RD STRM Library</h1>" > site_root/index.html
           echo "<ul>" >> site_root/index.html
           echo "<li><a href='Movies/'>Movies</a></li>" >> site_root/index.html
           echo "<li><a href='TV_Shows/'>TV Shows</a></li>" >> site_root/index.html
           echo "</ul>" >> site_root/index.html
 
       ####################################################################
-      # FETCH TORRENTS
+      # FETCH REAL-DEBRID TORRENTS
       ####################################################################
       - name: Fetch RD torrents
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-            "https://api.real-debrid.com/rest/1.0/torrents" > torrents.json
+            "https://api.real-debrid.com/rest/1.0/torrents" \
+            > torrents.json
 
       ####################################################################
-      # BUILD STRM FILES
+      # BUILD STRM FILES FOR MOVIES + TV SHOWS
       ####################################################################
       - name: Build STRM
         run: |
@@ -64,6 +64,7 @@ jobs:
           CUTOFF=$(date -d "15 days ago" +%s)
 
           jq -c '.[]?' torrents.json | while read TOR; do
+
             ID=$(echo "$TOR" | jq -r '.id')
             NAME=$(echo "$TOR" | jq -r '.filename')
             ADDED=$(echo "$TOR" | jq -r '.added')
@@ -74,7 +75,8 @@ jobs:
             [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" > detail.json
+              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
+              > detail.json
 
             COUNT=$(jq '.files | length' detail.json)
             [ "$COUNT" -lt 1 ] && continue
@@ -85,6 +87,7 @@ jobs:
 
               BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
+
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
               [ "$LINK" = "null" ] && continue
 
@@ -96,67 +99,80 @@ jobs:
               DIRECT=$(echo "$UNR" | jq -r '.download')
               [ "$DIRECT" = "null" ] && continue
 
-              # TV SHOWS
+              ##############################################################
+              # TV SHOW LOGIC
+              ##############################################################
               if [[ "$BASENAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
-                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//;s/[._]/ /g')
-                RAWSEASON=$(echo "$BASENAME" | grep -oE '[Ss][0-9]+' | tr -d 'Ss')
-                RAWEPI=$(echo "$BASENAME" | grep -oE '[Ee][0-9]+' | tr -d 'Ee')
-                SNUM=$((10#$RAWSEASON))
-                ENUM=$((10#$RAWEPI))
+                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//; s/[._]/ /g')
+                SEASON=$(echo "$BASENAME" | grep -oE '[Ss][0-9]+' | tr -d 'Ss')
+                EPISODE=$(echo "$BASENAME" | grep -oE '[Ee][0-9]+' | tr -d 'Ee')
+
+                SNUM=$((10#$SEASON))
+                ENUM=$((10#$EPISODE))
 
                 mkdir -p "site_root/TV_Shows/$SHOW/Season $SNUM"
 
                 echo "$DIRECT" \
                   > "site_root/TV_Shows/$SHOW/Season $SNUM/$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
+
                 continue
               fi
 
-              # MOVIES
+              ##############################################################
+              # MOVIE LOGIC
+              ##############################################################
               TITLE=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
-              YEAR=$(echo "$BASENAME" | grep -oE '\b(19[0-9]{2}|20[0-3][0-9])\b' | head -n 1)
-              CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/\b(19[0-9]{2}|20[0-3][0-9])\b.*//')
+              YEAR=$(echo "$BASENAME" \
+                | grep -oE '\b(19[0-9]{2}|20[0-3][0-9])\b' \
+                | head -n 1)
+
+              CLEAN_TITLE=$(echo "$TITLE" \
+                | sed -E 's/\b(19[0-9]{2}|20[0-3][0-9])\b.*//')
 
               MOVIEDIR="site_root/Movies/$CLEAN_TITLE ($YEAR)"
               mkdir -p "$MOVIEDIR"
 
-              OUT="$CLEAN_TITLE ($YEAR).strm"
-              echo "$DIRECT" > "$MOVIEDIR/$OUT"
+              echo "$DIRECT" \
+                > "$MOVIEDIR/$CLEAN_TITLE ($YEAR).strm"
 
             done
           done
 
       ####################################################################
-      # SAFE DIRECTORY INDEXING — NO FUNCTIONS
+      # BUILD DIRECTORY INDEXES FOR KODI
       ####################################################################
-      - name: Build Indexes
+      - name: Build indexes
         run: |
           find site_root -type d | while read DIR; do
             HTML="$DIR/index.html"
             echo "<h2>$(basename "$DIR")</h2><ul>" > "$HTML"
-            for item in "$DIR"/*; do
-              NAME=$(basename "$item")
-              if [ -d "$item" ]; then
-                echo "<li><a href='$NAME/'>$NAME/</a></li>" >> "$HTML"
-              elif [[ "$NAME" == *.strm ]]; then
-                echo "<li><a href='$NAME'>$NAME</a></li>" >> "$HTML"
+            ls "$DIR" | while read ITEM; do
+              if [ -d "$DIR/$ITEM" ]; then
+                echo "<li><a href='$ITEM/'>$ITEM/</a></li>" >> "$HTML"
+              elif [[ "$ITEM" == *.strm ]]; then
+                echo "<li><a href='$ITEM'>$ITEM</a></li>" >> "$HTML"
               fi
             done
             echo "</ul>" >> "$HTML"
           done
 
       ####################################################################
-      # DEPLOY ROOT
+      # COMMIT FILES TO `gh-pages` BRANCH (REAL FILES)
       ####################################################################
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site_root
+      - name: Push to gh-pages
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    steps:
-      - uses: actions/deploy-pages@v4
+          git branch gh-pages || true
+
+          git checkout gh-pages
+
+          rm -rf Movies TV_Shows index.html _config.yml || true
+
+          cp -r ../site_root/* .
+
+          git add .
+          git commit -m "Update STRM library" || true
+
+          git push origin gh-pages --force
