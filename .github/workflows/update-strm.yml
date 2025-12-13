@@ -1,4 +1,4 @@
-name: Build Real-Debrid STRM Library (ROOT DEPLOY + KODI FIX)
+name: RD STRM Builder (Final No-Function Version)
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       ####################################################################
-      # PREPARE CLEAN ROOT FOR DEPLOYMENT
+      # CLEAN DEPLOY ROOT
       ####################################################################
       - name: Prepare deploy root
         run: |
@@ -29,7 +29,7 @@ jobs:
           mkdir -p site_root/TV_Shows
 
       ####################################################################
-      # DISABLE JEKYLL FOR RAW DIRECTORY LISTING
+      # DISABLE JEKYLL
       ####################################################################
       - name: Add _config.yml
         run: |
@@ -39,9 +39,9 @@ jobs:
       ####################################################################
       # ROOT INDEX
       ####################################################################
-      - name: Create root index
+      - name: Root index
         run: |
-          echo "<h1>RD STRM Library</h1>" > site_root/index.html
+          echo "<h1>RD Library</h1>" > site_root/index.html
           echo "<ul>" >> site_root/index.html
           echo "<li><a href='Movies/'>Movies</a></li>" >> site_root/index.html
           echo "<li><a href='TV_Shows/'>TV Shows</a></li>" >> site_root/index.html
@@ -58,16 +58,15 @@ jobs:
       ####################################################################
       # BUILD STRM FILES
       ####################################################################
-      - name: Build STRM files
+      - name: Build STRM
         run: |
           set +e
           CUTOFF=$(date -d "15 days ago" +%s)
 
-          jq -c '.[]?' torrents.json | while read TORRENT; do
-
-            ID=$(echo "$TORRENT" | jq -r '.id')
-            NAME=$(echo "$TORRENT" | jq -r '.filename')
-            ADDED=$(echo "$TORRENT" | jq -r '.added')
+          jq -c '.[]?' torrents.json | while read TOR; do
+            ID=$(echo "$TOR" | jq -r '.id')
+            NAME=$(echo "$TOR" | jq -r '.filename')
+            ADDED=$(echo "$TOR" | jq -r '.added')
 
             [ -z "$ID" ] && continue
 
@@ -75,24 +74,20 @@ jobs:
             [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
-              > detail.json
+              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" > detail.json
 
-            FILECOUNT=$(jq '.files | length' detail.json)
-            [ "$FILECOUNT" -lt 1 ] && continue
+            COUNT=$(jq '.files | length' detail.json)
+            [ "$COUNT" -lt 1 ] && continue
 
-            for i in $(seq 0 $(($FILECOUNT - 1))); do
-
+            for i in $(seq 0 $(($COUNT - 1))); do
               FILE=$(jq -r ".files[$i].path" detail.json)
               LINK=$(jq -r ".links[$i]?" detail.json)
 
               BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
-
-              [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|m4v|webm)$ ]] && continue
+              [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
               [ "$LINK" = "null" ] && continue
 
-              # Unrestrict
               UNR=$(curl -s -X POST \
                 -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
                 -d "link=$LINK" \
@@ -101,58 +96,43 @@ jobs:
               DIRECT=$(echo "$UNR" | jq -r '.download')
               [ "$DIRECT" = "null" ] && continue
 
-              ##############################################################
-              # TV SHOW HANDLING
-              ##############################################################
+              # TV SHOWS
               if [[ "$BASENAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
-
                 SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//;s/[._]/ /g')
-
                 RAWSEASON=$(echo "$BASENAME" | grep -oE '[Ss][0-9]+' | tr -d 'Ss')
                 RAWEPI=$(echo "$BASENAME" | grep -oE '[Ee][0-9]+' | tr -d 'Ee')
-
                 SNUM=$((10#$RAWSEASON))
                 ENUM=$((10#$RAWEPI))
 
-                SEASONPATH="site_root/TV_Shows/$SHOW/Season $SNUM"
-                mkdir -p "$SEASONPATH"
+                mkdir -p "site_root/TV_Shows/$SHOW/Season $SNUM"
 
                 echo "$DIRECT" \
-                  > "$SEASONPATH/$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
-
+                  > "site_root/TV_Shows/$SHOW/Season $SNUM/$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
                 continue
               fi
 
-              ##############################################################
-              # MOVIE HANDLING (FOLDER STRUCTURE FOR KODI)
-              ##############################################################
+              # MOVIES
               TITLE=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
               YEAR=$(echo "$BASENAME" | grep -oE '\b(19[0-9]{2}|20[0-3][0-9])\b' | head -n 1)
-              RES=$(echo "$BASENAME" | grep -oE '2160p|1080p|720p' | head -n 1)
               CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/\b(19[0-9]{2}|20[0-3][0-9])\b.*//')
 
               MOVIEDIR="site_root/Movies/$CLEAN_TITLE ($YEAR)"
               mkdir -p "$MOVIEDIR"
 
-              OUTNAME="$CLEAN_TITLE ($YEAR)"
-              [ -n "$RES" ] && OUTNAME="$OUTNAME $RES"
-              OUTNAME="$OUTNAME.strm"
-
-              echo "$DIRECT" > "$MOVIEDIR/$OUTNAME"
+              OUT="$CLEAN_TITLE ($YEAR).strm"
+              echo "$DIRECT" > "$MOVIEDIR/$OUT"
 
             done
           done
 
       ####################################################################
-      # BUILD DIRECTORY INDEXES (SAFE VERSION)
+      # SAFE DIRECTORY INDEXING — NO FUNCTIONS
       ####################################################################
-      - name: Build directory indexes
+      - name: Build Indexes
         run: |
-          create_index() {
-            DIR="$1"
+          find site_root -type d | while read DIR; do
             HTML="$DIR/index.html"
-            echo "<h2>Listing: $(basename "$DIR")</h2><ul>" > "$HTML"
-
+            echo "<h2>$(basename "$DIR")</h2><ul>" > "$HTML"
             for item in "$DIR"/*; do
               NAME=$(basename "$item")
               if [ -d "$item" ]; then
@@ -161,25 +141,11 @@ jobs:
                 echo "<li><a href='$NAME'>$NAME</a></li>" >> "$HTML"
               fi
             done
-
             echo "</ul>" >> "$HTML"
-          }
-
-          create_index "site_root/Movies"
-          for folder in site_root/Movies/*; do
-            [ -d "$folder" ] && create_index "$folder"
-          done
-
-          create_index "site_root/TV_Shows"
-          for show in site_root/TV_Shows/*; do
-            [ -d "$show" ] && create_index "$show"
-            for season in "$show"/Season*; do
-              [ -d "$season" ] && create_index "$season"
-            done
           done
 
       ####################################################################
-      # DEPLOY site_root AS GITHUB PAGES ROOT
+      # DEPLOY ROOT
       ####################################################################
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
