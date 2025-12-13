@@ -3,7 +3,7 @@ name: Build Real-Debrid STRM Library
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 * * * *"   # Runs every hour
 
 permissions:
   contents: write
@@ -15,81 +15,98 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Prepare folders
+      - name: Prepare folder structure
         run: |
           rm -rf strm
           mkdir -p strm/Movies
           mkdir -p "strm/TV Shows"
 
-      - name: Fetch RD torrents
+      - name: Fetch Real-Debrid Torrents List
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
             > torrents.json
+          echo "Fetched torrent list:"
           cat torrents.json
 
-      - name: Convert RD torrents to STRM
+      - name: Build STRM Files
         run: |
           jq -c '.[]' torrents.json | while read TORRENT; do
             ID=$(echo "$TORRENT" | jq -r '.id')
             NAME=$(echo "$TORRENT" | jq -r '.filename')
 
+            echo ""
             echo "Processing torrent: $NAME"
 
-            # Fetch detailed torrent info
+            # Fetch files & RD links for this torrent
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
               > detail.json
 
-            # Number of files
-            COUNT=$(jq '.files | length' detail.json)
+            FILECOUNT=$(jq '.files | length' detail.json)
 
-            # Skip if no files
-            if [ "$COUNT" -eq 0 ]; then
-              echo "No files in torrent, skipping."
+            if [ "$FILECOUNT" -eq 0 ]; then
+              echo "No files found — skipping torrent."
               continue
             fi
 
-            # Loop through each file by index
-            for i in $(seq 0 $(($COUNT - 1))); do
+            for i in $(seq 0 $(($FILECOUNT - 1))); do
               FILE=$(jq -r ".files[$i].path" detail.json)
               LINK=$(jq -r ".links[$i]?" detail.json)
 
-              # Skip missing links
+              BASENAME=$(basename "$FILE")
+              EXT="${BASENAME##*.}"
+
+              # Skip empty or missing links
               if [ "$LINK" = "null" ] || [ -z "$LINK" ]; then
-                echo "File has no RD link yet, skipping: $FILE"
+                echo "Skipping (no RD link): $BASENAME"
                 continue
               fi
 
-              BASENAME=$(basename "$FILE")
+              # Skip non-media files
+              if [[ ! "$EXT" =~ ^(mkv|mp4|mov|avi|webm|m4v)$ ]]; then
+                echo "Skipping non-video file: $BASENAME"
+                continue
+              fi
 
-              echo "→ File: $BASENAME"
+              echo "→ Valid File: $BASENAME"
 
-              # TV Episode detection
+              #
+              # Detect TV Shows (SxxEyy)
+              #
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
                 SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/[._]/ /g')
                 SEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S)
                 EP=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E)
 
                 mkdir -p "strm/TV Shows/$SHOW/Season $SEASON"
-                echo "$LINK" > "strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
+                OUTFILE="strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
 
+                echo "$LINK" > "$OUTFILE"
+                echo "Created TV STRM: $OUTFILE"
+
+              #
+              # Otherwise treat as Movie
+              #
               else
-                # Movie parsing
                 TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/[._]/ /g')
                 YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}')
                 [ -z "$YEAR" ] && YEAR=""
 
-                echo "$LINK" > "strm/Movies/$TITLE ($YEAR).strm"
+                OUTFILE="strm/Movies/$TITLE ($YEAR).strm"
+
+                echo "$LINK" > "$OUTFILE"
+                echo "Created Movie STRM: $OUTFILE"
               fi
 
             done
+
           done
 
-      - name: Upload STRM folder
+      - name: Upload STRM folder to GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
@@ -102,4 +119,5 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
