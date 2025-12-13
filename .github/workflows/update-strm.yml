@@ -14,31 +14,34 @@ jobs:
 
     steps:
 
+      ###############################################################
+      # CHECKOUT REPO
+      ###############################################################
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      ####################################################################
-      # CREATE CLEAN BUILD FOLDER
-      ####################################################################
+      ###############################################################
+      # CLEAN OUTPUT FOLDER
+      ###############################################################
       - name: Prepare output
         run: |
           rm -rf site_root
           mkdir -p site_root/Movies
           mkdir -p site_root/TV_Shows
 
-      ####################################################################
-      # DISABLE JEKYLL
-      ####################################################################
+      ###############################################################
+      # DISABLE JEKYLL FOR GITHUB PAGES
+      ###############################################################
       - name: Add config
         run: |
           echo "theme: null" > site_root/_config.yml
           echo "markdown: kramdown" >> site_root/_config.yml
 
-      ####################################################################
+      ###############################################################
       # ROOT INDEX
-      ####################################################################
+      ###############################################################
       - name: Add root index
         run: |
           echo "<h1>RD STRM Library</h1>" > site_root/index.html
@@ -47,17 +50,17 @@ jobs:
           echo "<li><a href='TV_Shows/'>TV Shows</a></li>" >> site_root/index.html
           echo "</ul>" >> site_root/index.html
 
-      ####################################################################
+      ###############################################################
       # FETCH RD TORRENTS
-      ####################################################################
+      ###############################################################
       - name: Fetch RD torrents
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" > torrents.json
 
-      ####################################################################
+      ###############################################################
       # BUILD STRM FILES
-      ####################################################################
+      ###############################################################
       - name: Build STRM files
         run: |
           set +e
@@ -94,7 +97,9 @@ jobs:
               DIRECT=$(echo "$UNR" | jq -r '.download')
               [ "$DIRECT" = "null" ] && continue
 
+              ###############################################################
               # TV SHOW LOGIC
+              ###############################################################
               if [[ "$BASENAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
                 SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//; s/[._]/ /g')
                 SNUM=$(echo "$BASENAME" | grep -oE '[Ss][0-9]+' | tr -d 'Ss')
@@ -107,7 +112,9 @@ jobs:
                 continue
               fi
 
+              ###############################################################
               # MOVIE LOGIC
+              ###############################################################
               TITLE=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
               YEAR=$(echo "$BASENAME" | grep -oE '\b(19[0-9]{2}|20[0-3][0-9])\b' | head -n1)
               CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/\b(19[0-9]{2}|20[0-3][0-9])\b.*//')
@@ -120,9 +127,9 @@ jobs:
             done
           done
 
-      ####################################################################
-      # BUILD HTML INDEXES FOR ALL DIRECTORIES
-      ####################################################################
+      ###############################################################
+      # BUILD HTML INDEXES (ALL DIRECTORIES)
+      ###############################################################
       - name: Build directory indexes
         run: |
           find site_root -type d | while read DIR; do
@@ -140,23 +147,20 @@ jobs:
             echo "</ul>" >> "$HTML"
           done
 
-      ####################################################################
-      # PUSH site_root TO gh-pages WITHOUT SWITCHING BRANCHES
-      ####################################################################
-      - name: Commit to gh-pages
+      ###############################################################
+      # PUSH site_root TO MAIN BRANCH ROOT
+      ###############################################################
+      - name: Commit to main
         run: |
           git config user.email "github-actions@github.com"
           git config user.name "GitHub Actions"
 
-          git branch gh-pages || true
+          # Remove everything except .git
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
 
-          git worktree add gh-pages-worktree gh-pages || true
+          # Copy new build into repo root
+          cp -r site_root/* .
 
-          rm -rf gh-pages-worktree/*
-
-          cp -r site_root/* gh-pages-worktree/
-
-          cd gh-pages-worktree
           git add .
           git commit -m "Update STRM library" || true
-          git push origin gh-pages --force
+          git push origin main --force
