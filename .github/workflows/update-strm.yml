@@ -24,14 +24,14 @@ jobs:
           mkdir -p strm/Movies
           mkdir -p "strm/TV Shows"
 
-      - name: Fetch RD torrents list
+      - name: Fetch RD torrents
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
             > torrents.json
           cat torrents.json
 
-      - name: Build STRM files from RD torrents
+      - name: Convert RD torrents to STRM
         run: |
           jq -c '.[]' torrents.json | while read TORRENT; do
             ID=$(echo "$TORRENT" | jq -r '.id')
@@ -39,19 +39,38 @@ jobs:
 
             echo "Processing torrent: $NAME"
 
-            # fetch links for this torrent
+            # Fetch detailed torrent info
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
               > detail.json
 
-            # loop through all downloadable links
-            jq -c '.links[]' detail.json | while read LINK; do
+            # Number of files
+            COUNT=$(jq '.files | length' detail.json)
 
-              # Movies or TV?
-              BASENAME=$(echo "$LINK" | sed 's/.*\///')
+            # Skip if no files
+            if [ "$COUNT" -eq 0 ]; then
+              echo "No files in torrent, skipping."
+              continue
+            fi
 
+            # Loop through each file by index
+            for i in $(seq 0 $(($COUNT - 1))); do
+              FILE=$(jq -r ".files[$i].path" detail.json)
+              LINK=$(jq -r ".links[$i]?" detail.json)
+
+              # Skip missing links
+              if [ "$LINK" = "null" ] || [ -z "$LINK" ]; then
+                echo "File has no RD link yet, skipping: $FILE"
+                continue
+              fi
+
+              BASENAME=$(basename "$FILE")
+
+              echo "→ File: $BASENAME"
+
+              # TV Episode detection
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
-                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/\./ /g')
+                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/[._]/ /g')
                 SEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S)
                 EP=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E)
 
@@ -59,7 +78,8 @@ jobs:
                 echo "$LINK" > "strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
 
               else
-                TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/\./ /g')
+                # Movie parsing
+                TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/[._]/ /g')
                 YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}')
                 [ -z "$YEAR" ] && YEAR=""
 
@@ -67,7 +87,6 @@ jobs:
               fi
 
             done
-
           done
 
       - name: Upload STRM folder
