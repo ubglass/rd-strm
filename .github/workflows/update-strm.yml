@@ -1,4 +1,4 @@
-name: RD STRM Builder + Koofr Sync + GitHub Pages
+name: RD STRM Builder + Koofr Sync + GitHub Pages (FINAL FIXED)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
           mkdir -p site_root/TV_Shows
 
       # ----------------------------------------------------------
-      # DISABLE JEKYLL
+      # DISABLE JEKYLL FOR GITHUB PAGES
       # ----------------------------------------------------------
       - name: Disable Jekyll
         run: |
@@ -69,16 +69,15 @@ jobs:
           CUTOFF=$(date -d "15 days ago" +%s)
 
           ####################################################################
-          # TMDB ARTWORK FETCHER (Optimized: Only fetch missing images)
+          # TMDB ARTWORK FETCHER (Optimized)
           ####################################################################
           fetch_artwork() {
             QUERY="$1"
             TYPE="$2"
             DEST="$3"
 
-            # Skip TMDb entirely if poster & fanart already exist
+            # Skip if poster & fanart already exist
             if [ -f "$DEST/poster.jpg" ] && [ -f "$DEST/fanart.jpg" ]; then
-              echo "Artwork exists for: $QUERY → Skipping TMDb"
               return
             fi
 
@@ -86,11 +85,7 @@ jobs:
               "https://api.themoviedb.org/3/search/$TYPE?api_key=$TMDB_KEY&query=$QUERY")
 
             ID=$(echo "$RES" | jq -r '.results[0].id')
-
-            if [ "$ID" = "null" ]; then
-              echo "TMDb match not found for: $QUERY"
-              return
-            fi
+            [ "$ID" = "null" ] && return
 
             DETAILS=$(curl -s \
               "https://api.themoviedb.org/3/$TYPE/$ID?api_key=$TMDB_KEY")
@@ -98,12 +93,13 @@ jobs:
             POSTER_PATH=$(echo "$DETAILS" | jq -r '.poster_path')
             FANART_PATH=$(echo "$DETAILS" | jq -r '.backdrop_path')
 
-            # Only download if missing
+            # poster
             if [ ! -f "$DEST/poster.jpg" ] && [ "$POSTER_PATH" != "null" ]; then
               curl -s "https://image.tmdb.org/t/p/original$POSTER_PATH" \
                 -o "$DEST/poster.jpg"
             fi
 
+            # fanart
             if [ ! -f "$DEST/fanart.jpg" ] && [ "$FANART_PATH" != "null" ]; then
               curl -s "https://image.tmdb.org/t/p/original$FANART_PATH" \
                 -o "$DEST/fanart.jpg"
@@ -111,7 +107,7 @@ jobs:
           }
 
           ####################################################################
-          # PARSE TORRENTS + CREATE STRM, NFO, ARTWORK
+          # PARSE TORRENT FILES & GENERATE STRM + NFO
           ####################################################################
           jq -c '.[]?' torrents.json | while read TOR; do
 
@@ -121,7 +117,6 @@ jobs:
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
             [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
-            # RD torrent info
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
               > detail.json
@@ -157,10 +152,8 @@ jobs:
 
                 mkdir -p "$SHOWDIR"
 
-                # Optimized TMDb
                 fetch_artwork "$CLEAN_SHOW" "tv" "$SHOWDIR"
 
-                # tvshow.nfo
                 if [ ! -f "$SHOWDIR/tvshow.nfo" ]; then
                   echo "<tvshow>" > "$SHOWDIR/tvshow.nfo"
                   echo "  <title>$CLEAN_SHOW</title>" >> "$SHOWDIR/tvshow.nfo"
@@ -179,7 +172,6 @@ jobs:
 
                 OUTFILE="$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
 
-                # Skip existing STRM
                 if [ -f "$OUTFILE" ]; then
                   continue
                 fi
@@ -195,7 +187,6 @@ jobs:
 
                 echo "$DIRECT" > "$OUTFILE"
 
-                # Episode NFO
                 EP_NFO="$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
                 echo "<episodedetails>" > "$EP_NFO"
                 echo "  <title>$CLEAN_SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM)</title>" >> "$EP_NFO"
@@ -241,7 +232,6 @@ jobs:
 
               echo "$DIRECT" > "$OUTFILE"
 
-              # movie.nfo
               echo "<movie>" > "$MOVIEDIR/movie.nfo"
               echo "  <title>$CLEAN_TITLE</title>" >> "$MOVIEDIR/movie.nfo"
               echo "  <year>$YEAR</year>" >> "$MOVIEDIR/movie.nfo"
@@ -282,7 +272,7 @@ jobs:
           done
 
       # ----------------------------------------------------------
-      # UPLOAD ARTIFACT TO GITHUB ACTIONS (ZIP)
+      # UPLOAD ARTIFACT TO GITHUB ACTIONS
       # ----------------------------------------------------------
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -290,32 +280,39 @@ jobs:
           path: site_root
 
       # ----------------------------------------------------------
-      # *** KOFR FULL SYNC ***
-      # DELETE EVERYTHING IN Koofr/rd-strm/
-      # THEN UPLOAD FRESH CONTENT
+      # KOFR FULL SYNC — DELETE + CLEAN UPLOAD
       # ----------------------------------------------------------
-      - name: Full delete Koofr rd-strm folder
+      - name: FULL DELETE rd-strm folder on Koofr
         run: |
           curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
             -X DELETE "${{ secrets.KOFR_URL }}" || true
 
-          # Recreate folder
           curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
             -X MKCOL "${{ secrets.KOFR_URL }}"
 
-      - name: Upload new library to Koofr
+      - name: Upload library to Koofr (SAFE URL-ENCODING)
         run: |
           cd site_root
+
+          encode() {
+            echo "$1" | sed 's/ /%20/g'
+          }
+
+          # Create directories
           find . -type d | while read DIR; do
-            TARGET="${{ secrets.KOFR_URL }}${DIR#.}/"
+            CLEAN="${DIR#./}"
+            URL="${{ secrets.KOFR_URL }}$(encode "$CLEAN")/"
             curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-              -X MKCOL "$TARGET" || true
+              -X MKCOL "$URL" 2>/dev/null || true
           done
 
+          # Upload files
           find . -type f | while read FILE; do
-            TARGET="${{ secrets.KOFR_URL }}${FILE#.}"
+            CLEAN="${FILE#./}"
+            URL="${{ secrets.KOFR_URL }}$(encode "$CLEAN")"
+
             curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-              -T "$FILE" "$TARGET"
+              -T "$FILE" "$URL"
           done
 
   # ----------------------------------------------------------
