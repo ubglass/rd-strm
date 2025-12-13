@@ -1,4 +1,4 @@
-name: RD STRM Builder (Full Version with Metadata, Posters, Cleanup)
+name: RD STRM Builder + Koofr Sync + GitHub Pages
 
 on:
   workflow_dispatch:
@@ -17,19 +17,31 @@ jobs:
 
     steps:
 
+      # ----------------------------------------------------------
+      # CHECKOUT REPO
+      # ----------------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # ----------------------------------------------------------
+      # PREPARE OUTPUT STRUCTURE
+      # ----------------------------------------------------------
       - name: Prepare site_root
         run: |
           rm -rf site_root
           mkdir -p site_root/Movies
           mkdir -p site_root/TV_Shows
 
+      # ----------------------------------------------------------
+      # DISABLE JEKYLL
+      # ----------------------------------------------------------
       - name: Disable Jekyll
         run: |
           echo "theme: null" > site_root/_config.yml
 
+      # ----------------------------------------------------------
+      # ROOT INDEX PAGE
+      # ----------------------------------------------------------
       - name: Root index page
         run: |
           echo "<h1>RD STRM Library</h1>" > site_root/index.html
@@ -38,11 +50,18 @@ jobs:
           echo "<li><a href='TV_Shows/'>TV Shows</a></li>" >> site_root/index.html
           echo "</ul>" >> site_root/index.html
 
+      # ----------------------------------------------------------
+      # FETCH RD TORRENTS
+      # ----------------------------------------------------------
       - name: Fetch RD torrents
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-            "https://api.real-debrid.com/rest/1.0/torrents" > torrents.json
+            "https://api.real-debrid.com/rest/1.0/torrents" \
+            > torrents.json
 
+      # ----------------------------------------------------------
+      # BUILD STRM LIBRARY WITH METADATA + TMDB + CLEAN NAMES
+      # ----------------------------------------------------------
       - name: Build STRM library
         run: |
           set +e
@@ -50,56 +69,62 @@ jobs:
           CUTOFF=$(date -d "15 days ago" +%s)
 
           ####################################################################
-          # Optimized TMDb Artwork Fetcher (No Unneeded Calls)
+          # TMDB ARTWORK FETCHER (Optimized: Only fetch missing images)
           ####################################################################
           fetch_artwork() {
             QUERY="$1"
             TYPE="$2"
             DEST="$3"
 
-            # Skip TMDb if artwork already exists
+            # Skip TMDb entirely if poster & fanart already exist
             if [ -f "$DEST/poster.jpg" ] && [ -f "$DEST/fanart.jpg" ]; then
-              echo "Artwork exists for $QUERY → Skipping TMDb"
+              echo "Artwork exists for: $QUERY → Skipping TMDb"
               return
             fi
 
-            RES=$(curl -s "https://api.themoviedb.org/3/search/$TYPE?api_key=$TMDB_KEY&query=$QUERY")
+            RES=$(curl -s \
+              "https://api.themoviedb.org/3/search/$TYPE?api_key=$TMDB_KEY&query=$QUERY")
+
             ID=$(echo "$RES" | jq -r '.results[0].id')
 
             if [ "$ID" = "null" ]; then
-              echo "TMDb title not found: $QUERY"
+              echo "TMDb match not found for: $QUERY"
               return
             fi
 
-            DETAILS=$(curl -s "https://api.themoviedb.org/3/$TYPE/$ID?api_key=$TMDB_KEY")
+            DETAILS=$(curl -s \
+              "https://api.themoviedb.org/3/$TYPE/$ID?api_key=$TMDB_KEY")
 
             POSTER_PATH=$(echo "$DETAILS" | jq -r '.poster_path')
             FANART_PATH=$(echo "$DETAILS" | jq -r '.backdrop_path')
 
-            # Fetch only missing poster
+            # Only download if missing
             if [ ! -f "$DEST/poster.jpg" ] && [ "$POSTER_PATH" != "null" ]; then
-              curl -s "https://image.tmdb.org/t/p/original$POSTER_PATH" -o "$DEST/poster.jpg"
+              curl -s "https://image.tmdb.org/t/p/original$POSTER_PATH" \
+                -o "$DEST/poster.jpg"
             fi
 
-            # Fetch only missing fanart
             if [ ! -f "$DEST/fanart.jpg" ] && [ "$FANART_PATH" != "null" ]; then
-              curl -s "https://image.tmdb.org/t/p/original$FANART_PATH" -o "$DEST/fanart.jpg"
+              curl -s "https://image.tmdb.org/t/p/original$FANART_PATH" \
+                -o "$DEST/fanart.jpg"
             fi
           }
 
           ####################################################################
-          # MAIN LOOP OVER TORRENTS
+          # PARSE TORRENTS + CREATE STRM, NFO, ARTWORK
           ####################################################################
           jq -c '.[]?' torrents.json | while read TOR; do
+
             ID=$(echo "$TOR" | jq -r '.id')
             ADDED=$(echo "$TOR" | jq -r '.added')
 
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
             [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
-            # Get full torrent info
+            # RD torrent info
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" > detail.json
+              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
+              > detail.json
 
             COUNT=$(jq '.files | length' detail.json)
 
@@ -110,9 +135,7 @@ jobs:
               BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
 
-              # Only video files
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
-
 
               ################################################################
               # TV SHOW LOGIC
@@ -120,25 +143,27 @@ jobs:
               if [[ "$BASENAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
 
                 RAW_SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g')
-                SHOW=$(echo "$RAW_SHOW" | sed -E 's/ +/ /g' | sed 's/ *$//')
+                CLEAN_SHOW=$(echo "$RAW_SHOW" | sed -E 's/ +/ /g' | sed 's/ *$//')
 
-                YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])' | head -n1)
+                YEAR=$(echo "$BASENAME" \
+                  | grep -oE '(19[0-9]{2}|20[0-3][0-9])' \
+                  | head -n1)
 
                 if [ -n "$YEAR" ]; then
-                  SHOWDIR="site_root/TV_Shows/${SHOW} (${YEAR})"
+                  SHOWDIR="site_root/TV_Shows/${CLEAN_SHOW} (${YEAR})"
                 else
-                  SHOWDIR="site_root/TV_Shows/${SHOW}"
+                  SHOWDIR="site_root/TV_Shows/${CLEAN_SHOW}"
                 fi
 
                 mkdir -p "$SHOWDIR"
 
-                # Optimized TMDb Artwork Only If Missing
-                fetch_artwork "$SHOW" "tv" "$SHOWDIR"
+                # Optimized TMDb
+                fetch_artwork "$CLEAN_SHOW" "tv" "$SHOWDIR"
 
-                # Show-level NFO
+                # tvshow.nfo
                 if [ ! -f "$SHOWDIR/tvshow.nfo" ]; then
                   echo "<tvshow>" > "$SHOWDIR/tvshow.nfo"
-                  echo "  <title>$SHOW</title>" >> "$SHOWDIR/tvshow.nfo"
+                  echo "  <title>$CLEAN_SHOW</title>" >> "$SHOWDIR/tvshow.nfo"
                   [ -n "$YEAR" ] && echo "  <year>$YEAR</year>" >> "$SHOWDIR/tvshow.nfo"
                   echo "</tvshow>" >> "$SHOWDIR/tvshow.nfo"
                 fi
@@ -152,32 +177,28 @@ jobs:
                 SEASON_DIR="$SHOWDIR/Season $(printf '%02d' $SNUM)"
                 mkdir -p "$SEASON_DIR"
 
-                OUTFILE="$SEASON_DIR/${SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
+                OUTFILE="$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
 
                 # Skip existing STRM
                 if [ -f "$OUTFILE" ]; then
                   continue
                 fi
 
-                # Use direct link first
                 DIRECT="$LINK"
-
-                # Unrestrict fallback
                 if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
                   UNR=$(curl -s -X POST \
-                        -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-                        -d "link=$LINK" \
-                        "https://api.real-debrid.com/rest/1.0/unrestrict/link")
+                    -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+                    -d "link=$LINK" \
+                    "https://api.real-debrid.com/rest/1.0/unrestrict/link")
                   DIRECT=$(echo "$UNR" | jq -r '.download')
                 fi
 
-                # Write STRM
                 echo "$DIRECT" > "$OUTFILE"
 
                 # Episode NFO
-                EP_NFO="$SEASON_DIR/${SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
+                EP_NFO="$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
                 echo "<episodedetails>" > "$EP_NFO"
-                echo "  <title>$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM)</title>" >> "$EP_NFO"
+                echo "  <title>$CLEAN_SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM)</title>" >> "$EP_NFO"
                 echo "  <season>$SNUM</season>" >> "$EP_NFO"
                 echo "  <episode>$ENUM</episode>" >> "$EP_NFO"
                 [ -n "$YEAR" ] && echo "  <year>$YEAR</year>" >> "$EP_NFO"
@@ -186,20 +207,21 @@ jobs:
                 continue
               fi
 
-
               ################################################################
               # MOVIE LOGIC
               ################################################################
               RAW_TITLE=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
-              YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])' | head -n1)
+              YEAR=$(echo "$BASENAME" \
+                | grep -oE '(19[0-9]{2}|20[0-3][0-9])' \
+                | head -n1)
 
               TITLE_NO_EXTRA=$(echo "$RAW_TITLE" | sed -E "s/$YEAR.*//")
-              CLEAN_TITLE=$(echo "$TITLE_NO_EXTRA" | sed -E 's/ +/ /g' | sed 's/ *$//')
+              CLEAN_TITLE=$(echo "$TITLE_NO_EXTRA" \
+                | sed -E 's/ +/ /g' | sed 's/ *$//')
 
               MOVIEDIR="site_root/Movies/${CLEAN_TITLE} (${YEAR})"
               mkdir -p "$MOVIEDIR"
 
-              # Optimized TMDb artwork
               fetch_artwork "$CLEAN_TITLE" "movie" "$MOVIEDIR"
 
               OUTFILE="$MOVIEDIR/${CLEAN_TITLE} (${YEAR}).strm"
@@ -209,17 +231,17 @@ jobs:
               fi
 
               DIRECT="$LINK"
-
               if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
                 UNR=$(curl -s -X POST \
-                      -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-                      -d "link=$LINK" \
-                      "https://api.real-debrid.com/rest/1.0/unrestrict/link")
+                  -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+                  -d "link=$LINK" \
+                  "https://api.real-debrid.com/rest/1.0/unrestrict/link")
                 DIRECT=$(echo "$UNR" | jq -r '.download')
               fi
 
               echo "$DIRECT" > "$OUTFILE"
 
+              # movie.nfo
               echo "<movie>" > "$MOVIEDIR/movie.nfo"
               echo "  <title>$CLEAN_TITLE</title>" >> "$MOVIEDIR/movie.nfo"
               echo "  <year>$YEAR</year>" >> "$MOVIEDIR/movie.nfo"
@@ -228,15 +250,18 @@ jobs:
             done
           done
 
-      - name: Cleanup old STRM files
+      # ----------------------------------------------------------
+      # DELETE OLD STRM FILES LOCALLY (7 DAYS)
+      # ----------------------------------------------------------
+      - name: Cleanup old STRM
         run: |
           find site_root -name "*.strm" -mtime +7 -delete
           find site_root -type d -empty -delete
 
-      #######################################################################
-      # INDEX BUILDER — SHOW ALL FILES
-      #######################################################################
-      - name: Build full directory indexes
+      # ----------------------------------------------------------
+      # BUILD HTML INDEXES
+      # ----------------------------------------------------------
+      - name: Build directory indexes
         run: |
           find site_root -type d | while read DIR; do
             HTML="$DIR/index.html"
@@ -256,11 +281,46 @@ jobs:
             echo "</ul>" >> "$HTML"
           done
 
+      # ----------------------------------------------------------
+      # UPLOAD ARTIFACT TO GITHUB ACTIONS (ZIP)
+      # ----------------------------------------------------------
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: site_root
 
+      # ----------------------------------------------------------
+      # *** KOFR FULL SYNC ***
+      # DELETE EVERYTHING IN Koofr/rd-strm/
+      # THEN UPLOAD FRESH CONTENT
+      # ----------------------------------------------------------
+      - name: Full delete Koofr rd-strm folder
+        run: |
+          curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
+            -X DELETE "${{ secrets.KOFR_URL }}" || true
+
+          # Recreate folder
+          curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
+            -X MKCOL "${{ secrets.KOFR_URL }}"
+
+      - name: Upload new library to Koofr
+        run: |
+          cd site_root
+          find . -type d | while read DIR; do
+            TARGET="${{ secrets.KOFR_URL }}${DIR#.}/"
+            curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
+              -X MKCOL "$TARGET" || true
+          done
+
+          find . -type f | while read FILE; do
+            TARGET="${{ secrets.KOFR_URL }}${FILE#.}"
+            curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
+              -T "$FILE" "$TARGET"
+          done
+
+  # ----------------------------------------------------------
+  # DEPLOY TO GITHUB PAGES
+  # ----------------------------------------------------------
   deploy:
     needs: build
     runs-on: ubuntu-latest
