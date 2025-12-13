@@ -3,7 +3,7 @@ name: Build Real-Debrid STRM Library
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"   # update every hour
+    - cron: "0 * * * *"
 
 permissions:
   contents: write
@@ -18,26 +18,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create STRM folder structure
+      - name: Prepare folders
         run: |
           rm -rf strm
           mkdir -p strm/Movies
           mkdir -p "strm/TV Shows"
 
-      - name: Fetch Real-Debrid Cloud Files
+      - name: Fetch RD cloud list
         run: |
-          curl -s \
-            -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+          curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/cloud" \
             > cloud.json
+          cat cloud.json
 
-      - name: Parse RD Cloud and Generate STRM Files
+      - name: Process each cloud entry
         run: |
           jq -c '.[]' cloud.json | while read ITEM; do
-            NAME=$(echo "$ITEM" | jq -r '.filename')
-            LINK=$(echo "$ITEM" | jq -r '.download')
+            ID=$(echo "$ITEM" | jq -r '.id')
 
-            # Detect TV Shows
+            # Fetch file details for each item ID
+            curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+              "https://api.real-debrid.com/rest/1.0/cloud/$ID" \
+              > detail.json
+
+            LINK=$(jq -r '.links[0].download' detail.json)
+            NAME=$(jq -r '.links[0].filename' detail.json)
+
+            echo "Processing: $NAME"
+
+            # Detect TV Episodes
             if [[ "$NAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
               SHOW=$(echo "$NAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/\./ /g')
               SEASON=$(echo "$NAME" | grep -oE 'S[0-9]+' | tr -d S)
@@ -47,16 +56,17 @@ jobs:
               echo "$LINK" > "strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
 
             else
-              # Movie parsing
+              # Treat as movie
               TITLE=$(echo "$NAME" | sed -E 's/\.[0-9]{4}\..*//; s/\./ /g')
               YEAR=$(echo "$NAME" | grep -oE '[0-9]{4}')
               [ -z "$YEAR" ] && YEAR=""
 
               echo "$LINK" > "strm/Movies/$TITLE ($YEAR).strm"
             fi
+
           done
 
-      - name: Upload STRM folder as GitHub Pages artifact
+      - name: Upload STRM folder to Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
@@ -68,5 +78,4 @@ jobs:
       pages: write
       id-token: write
     steps:
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v4
