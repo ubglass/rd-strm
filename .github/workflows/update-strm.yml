@@ -24,49 +24,53 @@ jobs:
           mkdir -p strm/Movies
           mkdir -p "strm/TV Shows"
 
-      - name: Fetch RD cloud slots
+      - name: Fetch RD torrents list
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-            "https://api.real-debrid.com/rest/1.0/cloud/slots" \
-            > slots.json
-          cat slots.json
+            "https://api.real-debrid.com/rest/1.0/torrents" \
+            > torrents.json
+          cat torrents.json
 
-      - name: Generate STRM files
+      - name: Build STRM files from RD torrents
         run: |
-          jq -c '.[]' slots.json | while read SLOT; do
-            ID=$(echo "$SLOT" | jq -r '.id')
+          jq -c '.[]' torrents.json | while read TORRENT; do
+            ID=$(echo "$TORRENT" | jq -r '.id')
+            NAME=$(echo "$TORRENT" | jq -r '.filename')
 
-            # Fetch file details
+            echo "Processing torrent: $NAME"
+
+            # fetch links for this torrent
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-              "https://api.real-debrid.com/rest/1.0/cloud/slot/$ID" \
+              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
               > detail.json
 
-            NAME=$(jq -r '.filename' detail.json)
-            LINK=$(jq -r '.links[0].download' detail.json)
+            # loop through all downloadable links
+            jq -c '.links[]' detail.json | while read LINK; do
 
-            echo "Processing: $NAME"
+              # Movies or TV?
+              BASENAME=$(echo "$LINK" | sed 's/.*\///')
 
-            # Detect TV episodes
-            if [[ "$NAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
-              SHOW=$(echo "$NAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/\./ /g')
-              SEASON=$(echo "$NAME" | grep -oE 'S[0-9]+' | tr -d S)
-              EP=$(echo "$NAME" | grep -oE 'E[0-9]+' | tr -d E)
+              if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
+                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/\./ /g')
+                SEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S)
+                EP=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E)
 
-              mkdir -p "strm/TV Shows/$SHOW/Season $SEASON"
-              echo "$LINK" > "strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
+                mkdir -p "strm/TV Shows/$SHOW/Season $SEASON"
+                echo "$LINK" > "strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
 
-            else
-              # Movie
-              TITLE=$(echo "$NAME" | sed -E 's/\.[0-9]{4}\..*//; s/\./ /g')
-              YEAR=$(echo "$NAME" | grep -oE '[0-9]{4}')
-              [ -z "$YEAR" ] && YEAR=""
+              else
+                TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/\./ /g')
+                YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}')
+                [ -z "$YEAR" ] && YEAR=""
 
-              echo "$LINK" > "strm/Movies/$TITLE ($YEAR).strm"
-            fi
+                echo "$LINK" > "strm/Movies/$TITLE ($YEAR).strm"
+              fi
+
+            done
 
           done
 
-      - name: Upload STRM folder to Pages
+      - name: Upload STRM folder
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
