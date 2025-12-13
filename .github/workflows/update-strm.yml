@@ -18,8 +18,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create STRM folder
+      - name: Create STRM folder structure
         run: |
+          rm -rf strm
           mkdir -p strm/Movies
           mkdir -p "strm/TV Shows"
 
@@ -32,7 +33,6 @@ jobs:
 
       - name: Parse RD Cloud and Generate STRM Files
         run: |
-          # Read cloud entries (download links)
           jq -c '.[]' cloud.json | while read ITEM; do
             NAME=$(echo "$ITEM" | jq -r '.filename')
             LINK=$(echo "$ITEM" | jq -r '.download')
@@ -47,27 +47,17 @@ jobs:
               echo "$LINK" > "strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
 
             else
-              # Movie handling
+              # Movie parsing
               TITLE=$(echo "$NAME" | sed -E 's/\.[0-9]{4}\..*//; s/\./ /g')
               YEAR=$(echo "$NAME" | grep -oE '[0-9]{4}')
+              [ -z "$YEAR" ] && YEAR=""
 
-              if [ -z "$YEAR" ]; then YEAR=""; fi
-
-              FILENAME="$TITLE ($YEAR).strm"
-              echo "$LINK" > "strm/Movies/$FILENAME"
+              echo "$LINK" > "strm/Movies/$TITLE ($YEAR).strm"
             fi
           done
 
-      - name: Upload STRM files to repository
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add strm
-          git commit -m "Updated STRM library" || echo "No changes"
-          git push
-
-      - name: Deploy GitHub Pages
-        uses: actions/upload-pages-artifact@v2
+      - name: Upload STRM folder as GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: strm
 
@@ -79,5 +69,4 @@ jobs:
       id-token: write
     steps:
       - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v2
-
+        uses: actions/deploy-pages@v4
