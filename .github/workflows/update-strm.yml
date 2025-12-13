@@ -72,28 +72,31 @@ jobs:
 
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
 
-              ##########################################################################
-              # ---------------------------  TV SHOW FIX  ------------------------------
-              ##########################################################################
+              ##################################################################
+              # -- TV SHOWS (STRICT EPISODE MAPPING FIX)
+              ##################################################################
               if [[ "$BASENAME" =~ [Ss][0-9]{2}[Ee][0-9]{2} ]]; then
 
-                RAW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g' | sed 's/  */ /g')
+                RAW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' \
+                  | sed 's/[._]/ /g' | sed 's/  */ /g')
                 YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
 
                 SNUM=$(echo "$BASENAME" | grep -oE 'S[0-9]{2}' | tr -d 'S')
                 ENUM=$(echo "$BASENAME" | grep -oE 'E[0-9]{2}' | tr -d 'E')
 
-                SFX=$(printf "%02d" $SNUM)
-                EFX=$(printf "%02d" $ENUM)
+                SFX=$(printf "%02d" "$SNUM")
+                EFX=$(printf "%02d" "$ENUM")
+
                 PATTERN="S${SFX}E${EFX}"
 
-                # *********** STRICT STREAM MATCHING FIX ***********
+                # STRICT streamable episode matching
                 DIRECT=$(jq -r \
                   --arg PAT "$PATTERN" \
                   '.[] | select(.filename | test($PAT;"i")) | select(.streamable==1)' \
                   downloads.json \
                   | jq -s 'sort_by(.generated) | last.download')
 
+                # Fallback unrestrict
                 if [[ -z "$DIRECT" || "$DIRECT" == "null" ]]; then
                   LINK=$(jq -r ".links[$i]" detail.json)
 
@@ -105,7 +108,7 @@ jobs:
                   DIRECT=$(echo "$UNR" | jq -r '.download')
                 fi
 
-                [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
+                [[ -z "$DIRECT" || "$DIRECT" == "null" ]] && continue
 
                 DIRECT=$(clean_url "$DIRECT")
 
@@ -143,6 +146,7 @@ jobs:
 
                 EPJSON=$(curl -s \
                   "https://api.themoviedb.org/3/tv/$SID/season/$SNUM/episode/$ENUM?api_key=$TMDB")
+
                 EPLOT=$(echo "$EPJSON" | jq -r '.overview // ""')
                 EDATE=$(echo "$EPJSON" | jq -r '.air_date // ""')
 
@@ -153,10 +157,9 @@ jobs:
                 continue
               fi
 
-              ##########################################################################
-              # -------------------------------- MOVIES -------------------------------
-              ##########################################################################
-
+              ##################################################################
+              # -- MOVIES
+              ##################################################################
               RAW2=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
               YEAR=$(echo "$RAW2" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
               TITLE=$(echo "$RAW2" | sed -E "s/$YEAR.*//" | sed 's/  */ /g')
@@ -178,7 +181,7 @@ jobs:
                 DIRECT=$(echo "$UNR" | jq -r '.download')
               fi
 
-              [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
+              [[ -z "$DIRECT" || "$DIRECT" == "null" ]] && continue
 
               DIRECT=$(clean_url "$DIRECT")
 
