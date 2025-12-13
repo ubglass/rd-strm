@@ -12,9 +12,6 @@ permissions:
 
 jobs:
 
-  ###########################################################################
-  # BUILD JOB
-  ###########################################################################
   build:
     runs-on: ubuntu-latest
 
@@ -23,26 +20,16 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      #######################################################################
-      # PREPARE OUTPUT
-      #######################################################################
       - name: Prepare site_root
         run: |
           rm -rf site_root
           mkdir -p site_root/Movies
           mkdir -p site_root/TV_Shows
 
-      #######################################################################
-      # DISABLE JEKYLL
-      #######################################################################
-      - name: Add config
+      - name: Disable Jekyll
         run: |
           echo "theme: null" > site_root/_config.yml
-          echo "markdown: kramdown" >> site_root/_config.yml
 
-      #######################################################################
-      # ROOT INDEX
-      #######################################################################
       - name: Root index page
         run: |
           echo "<h1>RD STRM Library</h1>" > site_root/index.html
@@ -51,59 +38,70 @@ jobs:
           echo "<li><a href='TV_Shows/'>TV Shows</a></li>" >> site_root/index.html
           echo "</ul>" >> site_root/index.html
 
-      #######################################################################
-      # FETCH TORRENTS
-      #######################################################################
       - name: Fetch RD torrents
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" > torrents.json
 
-      #######################################################################
-      # BUILD STRM + METADATA + ARTWORK
-      #######################################################################
       - name: Build STRM library
         run: |
           set +e
           TMDB_KEY="${{ secrets.TMDB_API_KEY }}"
           CUTOFF=$(date -d "15 days ago" +%s)
 
+          ####################################################################
+          # Optimized TMDb Artwork Fetcher (No Unneeded Calls)
+          ####################################################################
           fetch_artwork() {
             QUERY="$1"
             TYPE="$2"
             DEST="$3"
 
+            # Skip TMDb if artwork already exists
+            if [ -f "$DEST/poster.jpg" ] && [ -f "$DEST/fanart.jpg" ]; then
+              echo "Artwork exists for $QUERY → Skipping TMDb"
+              return
+            fi
+
             RES=$(curl -s "https://api.themoviedb.org/3/search/$TYPE?api_key=$TMDB_KEY&query=$QUERY")
             ID=$(echo "$RES" | jq -r '.results[0].id')
 
-            if [ "$ID" != "null" ]; then
-              DETAILS=$(curl -s "https://api.themoviedb.org/3/$TYPE/$ID?api_key=$TMDB_KEY")
-              POSTER_PATH=$(echo "$DETAILS" | jq -r '.poster_path')
-              FANART_PATH=$(echo "$DETAILS" | jq -r '.backdrop_path')
+            if [ "$ID" = "null" ]; then
+              echo "TMDb title not found: $QUERY"
+              return
+            fi
 
-              if [ "$POSTER_PATH" != "null" ]; then
-                curl -s "https://image.tmdb.org/t/p/original$POSTER_PATH" -o "$DEST/poster.jpg"
-              fi
+            DETAILS=$(curl -s "https://api.themoviedb.org/3/$TYPE/$ID?api_key=$TMDB_KEY")
 
-              if [ "$FANART_PATH" != "null" ]; then
-                curl -s "https://image.tmdb.org/t/p/original$FANART_PATH" -o "$DEST/fanart.jpg"
-              fi
+            POSTER_PATH=$(echo "$DETAILS" | jq -r '.poster_path')
+            FANART_PATH=$(echo "$DETAILS" | jq -r '.backdrop_path')
+
+            # Fetch only missing poster
+            if [ ! -f "$DEST/poster.jpg" ] && [ "$POSTER_PATH" != "null" ]; then
+              curl -s "https://image.tmdb.org/t/p/original$POSTER_PATH" -o "$DEST/poster.jpg"
+            fi
+
+            # Fetch only missing fanart
+            if [ ! -f "$DEST/fanart.jpg" ] && [ "$FANART_PATH" != "null" ]; then
+              curl -s "https://image.tmdb.org/t/p/original$FANART_PATH" -o "$DEST/fanart.jpg"
             fi
           }
 
+          ####################################################################
+          # MAIN LOOP OVER TORRENTS
+          ####################################################################
           jq -c '.[]?' torrents.json | while read TOR; do
             ID=$(echo "$TOR" | jq -r '.id')
             ADDED=$(echo "$TOR" | jq -r '.added')
-            [ -z "$ID" ] && continue
 
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
             [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
+            # Get full torrent info
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" > detail.json
 
             COUNT=$(jq '.files | length' detail.json)
-            [ "$COUNT" -lt 1 ] && continue
 
             for i in $(seq 0 $(($COUNT - 1))); do
 
@@ -112,54 +110,59 @@ jobs:
               BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
 
+              # Only video files
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
 
-              ##################################################################
+
+              ################################################################
               # TV SHOW LOGIC
-              ##################################################################
+              ################################################################
               if [[ "$BASENAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
 
-                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//; s/[._]/ /g')
+                RAW_SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g')
+                SHOW=$(echo "$RAW_SHOW" | sed -E 's/ +/ /g' | sed 's/ *$//')
+
                 YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])' | head -n1)
-                CLEAN_SHOW=$(echo "$SHOW" | sed 's/ *$//')
 
                 if [ -n "$YEAR" ]; then
-                  FOLDER="site_root/TV_Shows/${CLEAN_SHOW} (${YEAR})"
+                  SHOWDIR="site_root/TV_Shows/${SHOW} (${YEAR})"
                 else
-                  FOLDER="site_root/TV_Shows/${CLEAN_SHOW}"
+                  SHOWDIR="site_root/TV_Shows/${SHOW}"
                 fi
 
-                mkdir -p "$FOLDER"
+                mkdir -p "$SHOWDIR"
 
-                if [ ! -f "$FOLDER/poster.jpg" ]; then
-                  fetch_artwork "$CLEAN_SHOW" "tv" "$FOLDER"
-                fi
+                # Optimized TMDb Artwork Only If Missing
+                fetch_artwork "$SHOW" "tv" "$SHOWDIR"
 
-                if [ ! -f "$FOLDER/tvshow.nfo" ]; then
-                  echo "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" > "$FOLDER/tvshow.nfo"
-                  echo "<tvshow>" >> "$FOLDER/tvshow.nfo"
-                  echo "  <title>$CLEAN_SHOW</title>" >> "$FOLDER/tvshow.nfo"
-                  [ -n "$YEAR" ] && echo "  <year>$YEAR</year>" >> "$FOLDER/tvshow.nfo"
-                  echo "</tvshow>" >> "$FOLDER/tvshow.nfo"
+                # Show-level NFO
+                if [ ! -f "$SHOWDIR/tvshow.nfo" ]; then
+                  echo "<tvshow>" > "$SHOWDIR/tvshow.nfo"
+                  echo "  <title>$SHOW</title>" >> "$SHOWDIR/tvshow.nfo"
+                  [ -n "$YEAR" ] && echo "  <year>$YEAR</year>" >> "$SHOWDIR/tvshow.nfo"
+                  echo "</tvshow>" >> "$SHOWDIR/tvshow.nfo"
                 fi
 
                 SNUM=$(echo "$BASENAME" | grep -oE '[Ss][0-9]+' | tr -d 'Ss')
                 ENUM=$(echo "$BASENAME" | grep -oE '[Ee][0-9]+' | tr -d 'Ee')
+
                 SNUM=$((10#$SNUM))
                 ENUM=$((10#$ENUM))
 
-                SEASON_DIR="$FOLDER/Season $(printf '%02d' $SNUM)"
+                SEASON_DIR="$SHOWDIR/Season $(printf '%02d' $SNUM)"
                 mkdir -p "$SEASON_DIR"
 
-                OUTFILE="$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
+                OUTFILE="$SEASON_DIR/${SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
 
+                # Skip existing STRM
                 if [ -f "$OUTFILE" ]; then
-                  echo "SKIP existing: $OUTFILE"
                   continue
                 fi
 
+                # Use direct link first
                 DIRECT="$LINK"
 
+                # Unrestrict fallback
                 if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
                   UNR=$(curl -s -X POST \
                         -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
@@ -168,13 +171,13 @@ jobs:
                   DIRECT=$(echo "$UNR" | jq -r '.download')
                 fi
 
-                [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
-
+                # Write STRM
                 echo "$DIRECT" > "$OUTFILE"
 
-                EP_NFO="$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
+                # Episode NFO
+                EP_NFO="$SEASON_DIR/${SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
                 echo "<episodedetails>" > "$EP_NFO"
-                echo "  <title>$CLEAN_SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM)</title>" >> "$EP_NFO"
+                echo "  <title>$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM)</title>" >> "$EP_NFO"
                 echo "  <season>$SNUM</season>" >> "$EP_NFO"
                 echo "  <episode>$ENUM</episode>" >> "$EP_NFO"
                 [ -n "$YEAR" ] && echo "  <year>$YEAR</year>" >> "$EP_NFO"
@@ -183,24 +186,25 @@ jobs:
                 continue
               fi
 
-              ##################################################################
+
+              ################################################################
               # MOVIE LOGIC
-              ##################################################################
-              TITLE=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
+              ################################################################
+              RAW_TITLE=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
               YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])' | head -n1)
-              CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(19[0-9]{2}|20[0-3][0-9]).*//; s/ *$//')
+
+              TITLE_NO_EXTRA=$(echo "$RAW_TITLE" | sed -E "s/$YEAR.*//")
+              CLEAN_TITLE=$(echo "$TITLE_NO_EXTRA" | sed -E 's/ +/ /g' | sed 's/ *$//')
 
               MOVIEDIR="site_root/Movies/${CLEAN_TITLE} (${YEAR})"
               mkdir -p "$MOVIEDIR"
 
-              if [ ! -f "$MOVIEDIR/poster.jpg" ]; then
-                fetch_artwork "$CLEAN_TITLE" "movie" "$MOVIEDIR"
-              fi
+              # Optimized TMDb artwork
+              fetch_artwork "$CLEAN_TITLE" "movie" "$MOVIEDIR"
 
               OUTFILE="$MOVIEDIR/${CLEAN_TITLE} (${YEAR}).strm"
 
               if [ -f "$OUTFILE" ]; then
-                echo "SKIP exists: $OUTFILE"
                 continue
               fi
 
@@ -214,8 +218,6 @@ jobs:
                 DIRECT=$(echo "$UNR" | jq -r '.download')
               fi
 
-              [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
-
               echo "$DIRECT" > "$OUTFILE"
 
               echo "<movie>" > "$MOVIEDIR/movie.nfo"
@@ -226,10 +228,7 @@ jobs:
             done
           done
 
-      #######################################################################
-      # DELETE STRM OLDER THAN 7 DAYS
-      #######################################################################
-      - name: Cleanup old STRM
+      - name: Cleanup old STRM files
         run: |
           find site_root -name "*.strm" -mtime +7 -delete
           find site_root -type d -empty -delete
@@ -241,7 +240,6 @@ jobs:
         run: |
           find site_root -type d | while read DIR; do
             HTML="$DIR/index.html"
-
             echo "<h2>$(basename "$DIR")</h2>" > "$HTML"
             echo "<ul>" >> "$HTML"
 
@@ -258,17 +256,11 @@ jobs:
             echo "</ul>" >> "$HTML"
           done
 
-      #######################################################################
-      # UPLOAD ARTIFACT
-      #######################################################################
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: site_root
 
-  ###########################################################################
-  # DEPLOY JOB
-  ###########################################################################
   deploy:
     needs: build
     runs-on: ubuntu-latest
