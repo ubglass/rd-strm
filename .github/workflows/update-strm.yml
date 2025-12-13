@@ -1,4 +1,4 @@
-name: Build Real-Debrid STRM Library (Simple Index + XML)
+name: Build Real-Debrid STRM Library (Final Stable XML + Simple Index)
 
 on:
   workflow_dispatch:
@@ -24,17 +24,17 @@ jobs:
           set +e
           rm -rf strm || true
           mkdir -p strm/Movies
-          mkdir -p "strm/TV Shows"
+          mkdir -p strm/TV_Shows
 
-      ##################################################
-      # Root index.html (Simple)
-      ##################################################
+      ###############################################
+      # Root index.html
+      ###############################################
       - name: Create Root Index
         run: |
           echo "<h1>RD STRM Library</h1>" > strm/index.html
           echo "<ul>" >> strm/index.html
           echo "<li><a href='Movies/'>Movies</a></li>" >> strm/index.html
-          echo "<li><a href='TV Shows/'>TV Shows</a></li>" >> strm/index.html
+          echo "<li><a href='TV_Shows/'>TV Shows</a></li>" >> strm/index.html
           echo "</ul>" >> strm/index.html
 
       - name: Fetch RD Torrents
@@ -43,9 +43,9 @@ jobs:
             "https://api.real-debrid.com/rest/1.0/torrents" \
             > torrents.json
 
-      ##################################################
-      # Build STRM + RD Direct Links
-      ##################################################
+      ###############################################
+      # Build STRMs + RD Direct Links
+      ###############################################
       - name: Build STRM Files
         run: |
           set +e
@@ -93,7 +93,7 @@ jobs:
               [ "$DIRECT" = "null" ] && continue
 
               ##################################################
-              # TV Episodes
+              # TV SHOWS
               ##################################################
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
 
@@ -104,7 +104,7 @@ jobs:
                 SNUM=$((10#$RAWSEASON))
                 ENUM=$((10#$RAWEp))
 
-                SEASONPATH="strm/TV Shows/$SHOW/Season $SNUM"
+                SEASONPATH="strm/TV_Shows/$SHOW/Season $SNUM"
                 mkdir -p "$SEASONPATH"
 
                 OUT="$SEASONPATH/$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
@@ -125,46 +125,55 @@ jobs:
             done
           done
 
-      ##################################################
-      # Build filelist.xml for Kodi
-      ##################################################
+      ###############################################
+      # SAFE XML (escaped names)
+      ###############################################
       - name: Generate filelist.xml
         run: |
+          escape_xml() {
+            echo "$1" \
+              | sed 's/&/&amp;/g' \
+              | sed 's/</&lt;/g' \
+              | sed 's/>/&gt;/g' \
+              | sed 's/\"/&quot;/g' \
+              | sed "s/'/&apos;/g"
+          }
+
           generate_xml() {
             DIR="$1"
             OUT="$DIR/filelist.xml"
+
             echo "<files>" > "$OUT"
 
             find "$DIR" -maxdepth 1 -type f -name "*.strm" | while read F; do
-              echo "  <file>$(basename "$F")</file>" >> "$OUT"
+              BASE=$(basename "$F")
+              ESCAPED=$(escape_xml "$BASE")
+              echo "  <file>$ESCAPED</file>" >> "$OUT"
             done
 
             echo "</files>" >> "$OUT"
           }
 
-          # Movies
           generate_xml "strm/Movies"
 
-          # TV Shows
-          for show in "strm/TV Shows"/*; do
+          for show in "strm/TV_Shows"/*; do
             [ -d "$show" ] || continue
-
             for season in "$show"/Season*; do
               [ -d "$season" ] || continue
               generate_xml "$season"
             done
           done
 
-      ##################################################
-      # Build SIMPLE HTML Indexes
-      ##################################################
+      ###############################################
+      # SIMPLE HTML INDEXES
+      ###############################################
       - name: Build Simple HTML Indexes
         run: |
           build_index() {
             DIR="$1"
             HTML="$DIR/index.html"
 
-            echo "<h2>Listing</h2><ul>" > "$HTML"
+            echo "<h2>Listing: $(basename "$DIR")</h2><ul>" > "$HTML"
 
             for item in "$DIR"/*; do
               NAME=$(basename "$item")
@@ -180,7 +189,7 @@ jobs:
 
           build_index "strm/Movies"
 
-          for show in "strm/TV Shows"/*; do
+          for show in "strm/TV_Shows"/*; do
             [ -d "$show" ] || continue
             build_index "$show"
 
@@ -190,10 +199,10 @@ jobs:
             done
           done
 
-      ##################################################
-      # DEPLOY PAGE
-      ##################################################
-      - name: Upload GitHub Pages
+      ###############################################
+      # DEPLOY TO GITHUB PAGES
+      ###############################################
+      - name: Upload GitHub Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
