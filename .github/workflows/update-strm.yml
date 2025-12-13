@@ -3,7 +3,7 @@ name: Build Real-Debrid STRM Library (Safe Mode)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 * * * *"   # every hour
 
 permissions:
   contents: write
@@ -31,24 +31,39 @@ jobs:
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
             > torrents.json || true
+          echo "Fetched torrent list:"
           cat torrents.json || true
 
-      - name: Build STRM files (Error-Proof)
+      - name: Build STRM Files (safe, last 15 days only)
         run: |
           set +e
-          
+
+          # Calculate cutoff timestamp
+          CUTOFF=$(date -d "15 days ago" +%s)
+
           jq -c '.[]?' torrents.json | while read TORRENT; do
             ID=$(echo "$TORRENT" | jq -r '.id' 2>/dev/null || true)
             NAME=$(echo "$TORRENT" | jq -r '.filename' 2>/dev/null || true)
+            ADDED=$(echo "$TORRENT" | jq -r '.added' 2>/dev/null || true)
 
-            if [ -z "$ID" ]; then
-              echo "Skipping malformed torrent entry"
+            if [ -z "$ID" ] || [ -z "$ADDED" ]; then
+              echo "Skipping malformed torrent..."
+              continue
+            fi
+
+            # Convert RD timestamp to epoch seconds
+            ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
+
+            # Skip anything older than 15 days
+            if [ "$ADDED_EPOCH" -lt "$CUTOFF" ]; then
+              echo "Skipping old torrent: $NAME"
               continue
             fi
 
             echo ""
-            echo "Processing torrent: $NAME"
+            echo "Processing recent torrent: $NAME"
 
+            # Fetch torrent details
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
               > detail.json || true
@@ -56,25 +71,24 @@ jobs:
             FILECOUNT=$(jq '.files | length' detail.json 2>/dev/null || echo 0)
 
             if [ "$FILECOUNT" -lt 1 ]; then
-              echo "No files — skipping torrent"
+              echo "No files found — skipping torrent."
               continue
             fi
 
             for i in $(seq 0 $(($FILECOUNT - 1))); do
-
               FILE=$(jq -r ".files[$i].path" detail.json 2>/dev/null || echo "")
               LINK=$(jq -r ".links[$i]?" detail.json 2>/dev/null || echo "")
 
               BASENAME=$(basename "$FILE" 2>/dev/null || echo "")
               EXT="${BASENAME##*.}"
 
-              # Skip empty or invalid
+              # Skip missing RD link
               if [ -z "$LINK" ] || [ "$LINK" = "null" ]; then
                 echo "Skipping (no RD link): $BASENAME"
                 continue
               fi
 
-              # Only video formats
+              # Only video files allowed
               if [[ ! "$EXT" =~ ^(mkv|mp4|mov|avi|webm|m4v)$ ]]; then
                 echo "Skipping non-video: $BASENAME"
                 continue
@@ -83,7 +97,7 @@ jobs:
               echo "→ Valid video: $BASENAME"
 
               #
-              # TV EPISODES — with ERROR SAFE numeric parsing
+              # TV EPISODE DETECTION (safe mode)
               #
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
                 SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/[._]/ /g' || true)
@@ -91,28 +105,27 @@ jobs:
                 RAWSEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S || echo "1")
                 RAWEp=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E || echo "1")
 
-                # SAFE decimal conversion
+                # Convert safely to decimal
                 SEASON_DEC=$((10#$RAWSEASON))
                 EP_DEC=$((10#$RAWEp))
 
                 mkdir -p "strm/TV Shows/$SHOW/Season $SEASON_DEC" || true
 
                 OUT="strm/TV Shows/$SHOW/Season $SEASON_DEC/$SHOW S$(printf "%02d" $SEASON_DEC)E$(printf "%02d" $EP_DEC).strm"
-                echo "$LINK" > "$OUT" || true
 
+                echo "$LINK" > "$OUT" || true
                 echo "Created TV STRM: $OUT"
                 continue
               fi
 
               #
-              # MOVIES — always fallback safe
+              # MOVIE PARSING (safe mode)
               #
               TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/[._]/ /g' || true)
               YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}' || echo "")
 
               OUT="strm/Movies/$TITLE ($YEAR).strm"
               echo "$LINK" > "$OUT" || true
-
               echo "Created Movie STRM: $OUT"
 
             done
