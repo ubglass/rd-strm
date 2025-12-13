@@ -1,1 +1,83 @@
+name: Build Real-Debrid STRM Library
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"   # update every hour
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create STRM folder
+        run: |
+          mkdir -p strm/Movies
+          mkdir -p "strm/TV Shows"
+
+      - name: Fetch Real-Debrid Cloud Files
+        run: |
+          curl -s \
+            -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+            "https://api.real-debrid.com/rest/1.0/cloud" \
+            > cloud.json
+
+      - name: Parse RD Cloud and Generate STRM Files
+        run: |
+          # Read cloud entries (download links)
+          jq -c '.[]' cloud.json | while read ITEM; do
+            NAME=$(echo "$ITEM" | jq -r '.filename')
+            LINK=$(echo "$ITEM" | jq -r '.download')
+
+            # Detect TV Shows
+            if [[ "$NAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
+              SHOW=$(echo "$NAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/\./ /g')
+              SEASON=$(echo "$NAME" | grep -oE 'S[0-9]+' | tr -d S)
+              EP=$(echo "$NAME" | grep -oE 'E[0-9]+' | tr -d E)
+
+              mkdir -p "strm/TV Shows/$SHOW/Season $SEASON"
+              echo "$LINK" > "strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
+
+            else
+              # Movie handling
+              TITLE=$(echo "$NAME" | sed -E 's/\.[0-9]{4}\..*//; s/\./ /g')
+              YEAR=$(echo "$NAME" | grep -oE '[0-9]{4}')
+
+              if [ -z "$YEAR" ]; then YEAR=""; fi
+
+              FILENAME="$TITLE ($YEAR).strm"
+              echo "$LINK" > "strm/Movies/$FILENAME"
+            fi
+          done
+
+      - name: Upload STRM files to repository
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add strm
+          git commit -m "Updated STRM library" || echo "No changes"
+          git push
+
+      - name: Deploy GitHub Pages
+        uses: actions/upload-pages-artifact@v2
+        with:
+          path: strm
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v2
 
