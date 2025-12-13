@@ -1,9 +1,9 @@
-name: Build Real-Debrid STRM Library (Safe, Direct Links)
+name: Build Real-Debrid STRM Library (XML Indexing)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"   # every hour
+    - cron: "0 * * * *"
 
 permissions:
   contents: write
@@ -16,39 +16,39 @@ jobs:
 
     steps:
 
-      - name: Checkout
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Prepare folders
+      - name: Prepare Folders
         run: |
           set +e
           rm -rf strm || true
-          mkdir -p strm/Movies || true
-          mkdir -p "strm/TV Shows" || true
+          mkdir -p strm/Movies
+          mkdir -p "strm/TV Shows"
 
-      - name: Fetch RD torrents
+      - name: Fetch RD Torrents
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
             > torrents.json
 
-      ##############################################
-      # BUILD STRM FILES (SAFE, DIRECT LINKS)
-      ##############################################
+      ###############################################
+      # Build STRM + filelist.xml
+      ###############################################
 
-      - name: Build STRM
+      - name: Build STRM Files
         run: |
           set +e
           CUTOFF=$(date -d "15 days ago" +%s)
 
           jq -c '.[]?' torrents.json | while read TORRENT; do
+
             ID=$(echo "$TORRENT" | jq -r '.id')
             NAME=$(echo "$TORRENT" | jq -r '.filename')
             ADDED=$(echo "$TORRENT" | jq -r '.added')
 
-            if [ -z "$ID" ] || [ -z "$ADDED" ]; then
-              continue
-            fi
+            [ -z "$ID" ] && continue
+            [ -z "$ADDED" ] && continue
 
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
             if [ "$ADDED_EPOCH" -lt "$CUTOFF" ]; then
@@ -63,132 +63,99 @@ jobs:
               > detail.json
 
             FILECOUNT=$(jq '.files | length' detail.json 2>/dev/null || echo 0)
-            if [ "$FILECOUNT" -lt 1 ]; then
-              continue
-            fi
+            [ "$FILECOUNT" -lt 1 ] && continue
 
             for i in $(seq 0 $(($FILECOUNT - 1))); do
+
               FILE=$(jq -r ".files[$i].path" detail.json)
               LINK=$(jq -r ".links[$i]?" detail.json)
 
               BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
 
-              if [[ ! "$EXT" =~ ^(mkv|mp4|mov|m4v|avi|webm)$ ]]; then
-                continue
-              fi
-              if [ -z "$LINK" ] || [ "$LINK" = "null" ]; then
-                continue
-              fi
+              [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|m4v|webm)$ ]] && continue
+              [ -z "$LINK" ] && continue
+              [ "$LINK" = "null" ] && continue
 
-              echo "→ Unrestricting: $BASENAME"
+              echo "→ Unrestricting $BASENAME"
 
-              ###############################
-              # REAL-DEBRID UNRESTRICT STEP
-              ###############################
-              UNRESTRICT=$(curl -s -X POST \
+              UNR=$(curl -s -X POST \
                 -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
                 -d "link=$LINK" \
                 "https://api.real-debrid.com/rest/1.0/unrestrict/link")
 
-              DIRECT=$(echo "$UNRESTRICT" | jq -r '.download')
+              DIRECT=$(echo "$UNR" | jq -r '.download')
+              [ -z "$DIRECT" ] && continue
+              [ "$DIRECT" = "null" ] && continue
 
-              if [ "$DIRECT" = "null" ] || [ -z "$DIRECT" ]; then
-                echo "Skipping (cannot unrestrict) $BASENAME"
-                continue
-              fi
-
-              ###############################
-              # TV EPISODE MATCH
-              ###############################
+              ##################################################
+              # TV Episode
+              ##################################################
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
 
                 SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//;s/[._]/ /g')
-
                 RAWSEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S)
                 RAWEp=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E)
 
-                SEASON_DEC=$((10#$RAWSEASON))
-                EP_DEC=$((10#$RAWEp))
+                SNUM=$((10#$RAWSEASON))
+                ENUM=$((10#$RAWEp))
 
-                mkdir -p "strm/TV Shows/$SHOW/Season $SEASON_DEC"
+                SEASONPATH="strm/TV Shows/$SHOW/Season $SNUM"
+                mkdir -p "$SEASONPATH"
 
-                OUT="strm/TV Shows/$SHOW/Season $SEASON_DEC/$SHOW S$(printf '%02d' $SEASON_DEC)E$(printf '%02d' $EP_DEC).strm"
-
+                OUT="$SEASONPATH/$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
                 echo "$DIRECT" > "$OUT"
-                echo "Created TV STRM: $OUT"
+
                 continue
               fi
 
-              ###############################
+              ##################################################
               # MOVIE
-              ###############################
+              ##################################################
               TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//;s/[._]/ /g')
               YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}' || echo "")
 
               OUT="strm/Movies/$TITLE ($YEAR).strm"
               echo "$DIRECT" > "$OUT"
 
-              echo "Created Movie STRM: $OUT"
-
             done
-
           done
 
-      ##############################################
-      # GENERATE INDEXES (Movies → Shows → Seasons)
-      ##############################################
+      ###############################################
+      # BUILD filelist.xml FOR EVERY FOLDER
+      ###############################################
 
-      - name: Build Index Pages
+      - name: Generate filelist.xml
         run: |
-          # Root index
-          echo "<h1>Real-Debrid STRM Library</h1>" > strm/index.html
-          echo "<ul><li><a href='Movies/'>Movies</a></li><li><a href='TV Shows/'>TV Shows</a></li></ul>" >> strm/index.html
+          generate_xml() {
+            DIR="$1"
+            FILE="$DIR/filelist.xml"
 
-          # Movies index
-          echo "<h2>Movies</h2><ul>" > strm/Movies/index.html
-          for f in strm/Movies/*.strm; do
-            [ -e "$f" ] || continue
-            FILE=$(basename "$f")
-            echo "<li><a href='$FILE'>$FILE</a></li>" >> strm/Movies/index.html
-          done
-          echo "</ul>" >> strm/Movies/index.html
+            echo "<files>" > "$FILE"
+            find "$DIR" -maxdepth 1 -type f -name "*.strm" | while read F; do
+              BASE=$(basename "$F")
+              echo "  <file>$BASE</file>" >> "$FILE"
+            done
+            echo "</files>" >> "$FILE"
+          }
 
-          # TV Shows index
-          echo "<h2>TV Shows</h2><ul>" > "strm/TV Shows/index.html"
+          # Movies
+          generate_xml "strm/Movies"
 
+          # TV Shows
           for show in "strm/TV Shows"/*; do
             [ -d "$show" ] || continue
-            SHOW_NAME=$(basename "$show")
-            echo "<li><a href='$SHOW_NAME/'>$SHOW_NAME</a></li>" >> "strm/TV Shows/index.html"
-
-            echo "<h2>$SHOW_NAME</h2><ul>" > "$show/index.html"
 
             for season in "$show"/Season*; do
               [ -d "$season" ] || continue
-              SEASON_NAME=$(basename "$season")
-              echo "<li><a href='$SEASON_NAME/'>$SEASON_NAME</a></li>" >> "$show/index.html"
-
-              echo "<h2>$SEASON_NAME</h2><ul>" > "$season/index.html"
-
-              for ep in "$season"/*.strm; do
-                [ -e "$ep" ] || continue
-                EP=$(basename "$ep")
-                echo "<li><a href='$EP'>$EP</a></li>" >> "$season/index.html"
-              done
-
-              echo "</ul>" >> "$season/index.html"
+              generate_xml "$season"
             done
-
-            echo "</ul>" >> "$show/index.html"
           done
 
-          echo "</ul>" >> "strm/TV Shows/index.html"
-
-      ##############################################
-      # DEPLOY
-      ##############################################
-      - name: Upload artifact
+      ###############################################
+      # DEPLOY TO GITHUB PAGES
+      ###############################################
+      - name: Upload Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
