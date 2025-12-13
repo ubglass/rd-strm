@@ -1,17 +1,19 @@
-name: RD STRM Builder (Final Working Version)
+name: RD STRM Builder (GitHub Pages Deployment)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 * * * *"   # Run every hour
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
+
   build:
     runs-on: ubuntu-latest
-
     steps:
 
       ###############################################################
@@ -19,8 +21,6 @@ jobs:
       ###############################################################
       - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       ###############################################################
       # CLEAN OUTPUT FOLDER
@@ -32,7 +32,7 @@ jobs:
           mkdir -p site_root/TV_Shows
 
       ###############################################################
-      # DISABLE JEKYLL FOR GITHUB PAGES
+      # DISABLE JEKYLL
       ###############################################################
       - name: Add config
         run: |
@@ -128,7 +128,7 @@ jobs:
           done
 
       ###############################################################
-      # BUILD HTML INDEXES (ALL DIRECTORIES)
+      # BUILD HTML INDEXES
       ###############################################################
       - name: Build directory indexes
         run: |
@@ -148,19 +148,23 @@ jobs:
           done
 
       ###############################################################
-      # PUSH site_root TO MAIN BRANCH ROOT
+      # UPLOAD ARTIFACT FOR GITHUB PAGES
       ###############################################################
-      - name: Commit to main
-        run: |
-          git config user.email "github-actions@github.com"
-          git config user.name "GitHub Actions"
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site_root
 
-          # Remove everything except .git
-          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+  ###############################################################
+  # DEPLOY TO GITHUB PAGES
+  ###############################################################
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
 
-          # Copy new build into repo root
-          cp -r site_root/* .
-
-          git add .
-          git commit -m "Update STRM library" || true
-          git push origin main --force
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
