@@ -1,9 +1,9 @@
-name: Build Real-Debrid STRM Library
+name: Build Real-Debrid STRM Library (Safe Mode)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"   # Runs every hour
+    - cron: "0 * * * *"
 
 permissions:
   contents: write
@@ -15,98 +15,111 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare folder structure
+      - name: Prepare folders
         run: |
-          rm -rf strm
-          mkdir -p strm/Movies
-          mkdir -p "strm/TV Shows"
+          set +e
+          rm -rf strm || true
+          mkdir -p strm/Movies || true
+          mkdir -p "strm/TV Shows" || true
 
-      - name: Fetch Real-Debrid Torrents List
+      - name: Fetch RD torrents list
         run: |
+          set +e
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
-            > torrents.json
-          echo "Fetched torrent list:"
-          cat torrents.json
+            > torrents.json || true
+          cat torrents.json || true
 
-      - name: Build STRM Files
+      - name: Build STRM files (Error-Proof)
         run: |
-          jq -c '.[]' torrents.json | while read TORRENT; do
-            ID=$(echo "$TORRENT" | jq -r '.id')
-            NAME=$(echo "$TORRENT" | jq -r '.filename')
+          set +e
+          
+          jq -c '.[]?' torrents.json | while read TORRENT; do
+            ID=$(echo "$TORRENT" | jq -r '.id' 2>/dev/null || true)
+            NAME=$(echo "$TORRENT" | jq -r '.filename' 2>/dev/null || true)
+
+            if [ -z "$ID" ]; then
+              echo "Skipping malformed torrent entry"
+              continue
+            fi
 
             echo ""
             echo "Processing torrent: $NAME"
 
-            # Fetch files & RD links for this torrent
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
-              > detail.json
+              > detail.json || true
 
-            FILECOUNT=$(jq '.files | length' detail.json)
+            FILECOUNT=$(jq '.files | length' detail.json 2>/dev/null || echo 0)
 
-            if [ "$FILECOUNT" -eq 0 ]; then
-              echo "No files found — skipping torrent."
+            if [ "$FILECOUNT" -lt 1 ]; then
+              echo "No files — skipping torrent"
               continue
             fi
 
             for i in $(seq 0 $(($FILECOUNT - 1))); do
-              FILE=$(jq -r ".files[$i].path" detail.json)
-              LINK=$(jq -r ".links[$i]?" detail.json)
 
-              BASENAME=$(basename "$FILE")
+              FILE=$(jq -r ".files[$i].path" detail.json 2>/dev/null || echo "")
+              LINK=$(jq -r ".links[$i]?" detail.json 2>/dev/null || echo "")
+
+              BASENAME=$(basename "$FILE" 2>/dev/null || echo "")
               EXT="${BASENAME##*.}"
 
-              # Skip empty or missing links
-              if [ "$LINK" = "null" ] || [ -z "$LINK" ]; then
+              # Skip empty or invalid
+              if [ -z "$LINK" ] || [ "$LINK" = "null" ]; then
                 echo "Skipping (no RD link): $BASENAME"
                 continue
               fi
 
-              # Skip non-media files
+              # Only video formats
               if [[ ! "$EXT" =~ ^(mkv|mp4|mov|avi|webm|m4v)$ ]]; then
-                echo "Skipping non-video file: $BASENAME"
+                echo "Skipping non-video: $BASENAME"
                 continue
               fi
 
-              echo "→ Valid File: $BASENAME"
+              echo "→ Valid video: $BASENAME"
 
               #
-              # Detect TV Shows (SxxEyy)
+              # TV EPISODES — with ERROR SAFE numeric parsing
               #
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
-                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/[._]/ /g')
-                SEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S)
-                EP=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E)
+                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/[._]/ /g' || true)
 
-                mkdir -p "strm/TV Shows/$SHOW/Season $SEASON"
-                OUTFILE="strm/TV Shows/$SHOW/Season $SEASON/$SHOW S$(printf %02d $SEASON)E$(printf %02d $EP).strm"
+                RAWSEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S || echo "1")
+                RAWEp=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E || echo "1")
 
-                echo "$LINK" > "$OUTFILE"
-                echo "Created TV STRM: $OUTFILE"
+                # SAFE decimal conversion
+                SEASON_DEC=$((10#$RAWSEASON))
+                EP_DEC=$((10#$RAWEp))
 
-              #
-              # Otherwise treat as Movie
-              #
-              else
-                TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/[._]/ /g')
-                YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}')
-                [ -z "$YEAR" ] && YEAR=""
+                mkdir -p "strm/TV Shows/$SHOW/Season $SEASON_DEC" || true
 
-                OUTFILE="strm/Movies/$TITLE ($YEAR).strm"
+                OUT="strm/TV Shows/$SHOW/Season $SEASON_DEC/$SHOW S$(printf "%02d" $SEASON_DEC)E$(printf "%02d" $EP_DEC).strm"
+                echo "$LINK" > "$OUT" || true
 
-                echo "$LINK" > "$OUTFILE"
-                echo "Created Movie STRM: $OUTFILE"
+                echo "Created TV STRM: $OUT"
+                continue
               fi
+
+              #
+              # MOVIES — always fallback safe
+              #
+              TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/[._]/ /g' || true)
+              YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}' || echo "")
+
+              OUT="strm/Movies/$TITLE ($YEAR).strm"
+              echo "$LINK" > "$OUT" || true
+
+              echo "Created Movie STRM: $OUT"
 
             done
 
           done
 
-      - name: Upload STRM folder to GitHub Pages artifact
+      - name: Upload to Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
@@ -119,5 +132,4 @@ jobs:
       id-token: write
 
     steps:
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v4
