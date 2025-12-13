@@ -63,7 +63,7 @@ jobs:
             "https://api.real-debrid.com/rest/1.0/torrents" > torrents.json
 
       # ---------------------------------------------------------------
-      # BUILD STRM FILES (NOW SKIPS ALREADY EXISTING FILES)
+      # BUILD STRM FILES (USES DIRECT LINKS FIRST, UNRESTRICT FALLBACK)
       # ---------------------------------------------------------------
       - name: Build STRM files
         run: |
@@ -72,9 +72,9 @@ jobs:
 
           jq -c '.[]?' torrents.json | while read TOR; do
             ID=$(echo "$TOR" | jq -r '.id')
-            NAME=$(echo "$TOR" | jq -r '.filename')
             ADDED=$(echo "$TOR" | jq -r '.added')
             [ -z "$ID" ] && continue
+
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
             [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
@@ -86,13 +86,12 @@ jobs:
 
             for i in $(seq 0 $(($COUNT - 1))); do
               FILE=$(jq -r ".files[$i].path" detail.json)
-              LINK=$(jq -r ".links[$i]?" detail.json)
+              LINK=$(jq -r ".links[$i]?" detail.json)   # direct RD link if available
               BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
 
-              # Only video formats allowed
+              # Only accept video formats
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
-              [ "$LINK" = "null" ] && continue
 
               ################################################################
               # TV SHOW LOGIC
@@ -101,6 +100,7 @@ jobs:
                 SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//; s/[._]/ /g')
                 SNUM=$(echo "$BASENAME" | grep -oE '[Ss][0-9]+' | tr -d 'Ss')
                 ENUM=$(echo "$BASENAME" | grep -oE '[Ee][0-9]+' | tr -d 'Ee')
+
                 SNUM=$((10#$SNUM))
                 ENUM=$((10#$ENUM))
 
@@ -108,21 +108,26 @@ jobs:
                 mkdir -p "$OUTDIR"
                 OUTFILE="$OUTDIR/$SHOW S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
 
-                # SKIP EXISTING STRM FILE
+                # SKIP IF FILE ALREADY EXISTS
                 if [ -f "$OUTFILE" ]; then
                   echo "Skipping existing episode: $OUTFILE"
                   continue
                 fi
 
-                # UNRESTRICT ONLY IF NEW
-                UNR=$(curl -s -X POST \
-                     -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-                     -d "link=$LINK" \
-                     "https://api.real-debrid.com/rest/1.0/unrestrict/link")
+                # USE DIRECT LINK IF ALREADY PROVIDED BY RD
+                DIRECT="$LINK"
 
-                DIRECT=$(echo "$UNR" | jq -r '.download')
-                [ "$DIRECT" = "null" ] && continue
+                # FALLBACK: UNRESTRICT ONLY IF DIRECT LINK IS MISSING
+                if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
+                  echo "Direct link missing → Unrestricting..."
+                  UNR=$(curl -s -X POST \
+                       -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+                       -d "link=$LINK" \
+                       "https://api.real-debrid.com/rest/1.0/unrestrict/link")
+                  DIRECT=$(echo "$UNR" | jq -r '.download')
+                fi
 
+                [ "$DIRECT" = "null" ] || [ -z "$DIRECT" ] && continue
                 echo "$DIRECT" > "$OUTFILE"
                 continue
               fi
@@ -138,21 +143,25 @@ jobs:
               mkdir -p "$MOVIEDIR"
               OUTFILE="$MOVIEDIR/$CLEAN_TITLE ($YEAR).strm"
 
-              # SKIP EXISTING MOVIE FILE
+              # SKIP IF FILE EXISTS
               if [ -f "$OUTFILE" ]; then
                 echo "Skipping existing movie: $OUTFILE"
                 continue
               fi
 
-              # UNRESTRICT ONLY IF NEW
-              UNR=$(curl -s -X POST \
-                   -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-                   -d "link=$LINK" \
-                   "https://api.real-debrid.com/rest/1.0/unrestrict/link")
+              DIRECT="$LINK"
 
-              DIRECT=$(echo "$UNR" | jq -r '.download')
-              [ "$DIRECT" = "null" ] && continue
+              # FALLBACK UNRESTRICT ONLY IF NEEDED
+              if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
+                echo "Direct link missing → Unrestricting..."
+                UNR=$(curl -s -X POST \
+                     -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+                     -d "link=$LINK" \
+                     "https://api.real-debrid.com/rest/1.0/unrestrict/link")
+                DIRECT=$(echo "$UNR" | jq -r '.download')
+              fi
 
+              [ "$DIRECT" = "null" ] || [ -z "$DIRECT" ] && continue
               echo "$DIRECT" > "$OUTFILE"
 
             done
