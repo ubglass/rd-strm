@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -31,17 +32,19 @@ jobs:
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
             > torrents.json || true
-          echo "Fetched torrent list:"
+
+          echo "Torrent list:"
           cat torrents.json || true
 
       - name: Build STRM Files (safe, last 15 days only)
         run: |
           set +e
 
-          # Calculate cutoff timestamp
+          # Cutoff time for 15 days
           CUTOFF=$(date -d "15 days ago" +%s)
 
           jq -c '.[]?' torrents.json | while read TORRENT; do
+
             ID=$(echo "$TORRENT" | jq -r '.id' 2>/dev/null || true)
             NAME=$(echo "$TORRENT" | jq -r '.filename' 2>/dev/null || true)
             ADDED=$(echo "$TORRENT" | jq -r '.added' 2>/dev/null || true)
@@ -51,10 +54,8 @@ jobs:
               continue
             fi
 
-            # Convert RD timestamp to epoch seconds
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
 
-            # Skip anything older than 15 days
             if [ "$ADDED_EPOCH" -lt "$CUTOFF" ]; then
               echo "Skipping old torrent: $NAME"
               continue
@@ -63,7 +64,6 @@ jobs:
             echo ""
             echo "Processing recent torrent: $NAME"
 
-            # Fetch torrent details
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
               "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
               > detail.json || true
@@ -71,24 +71,23 @@ jobs:
             FILECOUNT=$(jq '.files | length' detail.json 2>/dev/null || echo 0)
 
             if [ "$FILECOUNT" -lt 1 ]; then
-              echo "No files found — skipping torrent."
+              echo "No files in this torrent — skipping."
               continue
             fi
 
             for i in $(seq 0 $(($FILECOUNT - 1))); do
+
               FILE=$(jq -r ".files[$i].path" detail.json 2>/dev/null || echo "")
               LINK=$(jq -r ".links[$i]?" detail.json 2>/dev/null || echo "")
 
               BASENAME=$(basename "$FILE" 2>/dev/null || echo "")
               EXT="${BASENAME##*.}"
 
-              # Skip missing RD link
               if [ -z "$LINK" ] || [ "$LINK" = "null" ]; then
                 echo "Skipping (no RD link): $BASENAME"
                 continue
               fi
 
-              # Only video files allowed
               if [[ ! "$EXT" =~ ^(mkv|mp4|mov|avi|webm|m4v)$ ]]; then
                 echo "Skipping non-video: $BASENAME"
                 continue
@@ -97,40 +96,50 @@ jobs:
               echo "→ Valid video: $BASENAME"
 
               #
-              # TV EPISODE DETECTION (safe mode)
+              # TV EPISODES (safe)
               #
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
+
                 SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//; s/[._]/ /g' || true)
 
                 RAWSEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S || echo "1")
                 RAWEp=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E || echo "1")
 
-                # Convert safely to decimal
                 SEASON_DEC=$((10#$RAWSEASON))
                 EP_DEC=$((10#$RAWEp))
 
                 mkdir -p "strm/TV Shows/$SHOW/Season $SEASON_DEC" || true
 
-                OUT="strm/TV Shows/$SHOW/Season $SEASON_DEC/$SHOW S$(printf "%02d" $SEASON_DEC)E$(printf "%02d" $EP_DEC).strm"
+                OUT="strm/TV Shows/$SHOW/Season $SEASON_DEC/$SHOW S$(printf '%02d' $SEASON_DEC)E$(printf '%02d' $EP_DEC).strm"
 
                 echo "$LINK" > "$OUT" || true
                 echo "Created TV STRM: $OUT"
+
                 continue
               fi
 
               #
-              # MOVIE PARSING (safe mode)
+              # MOVIES (safe)
               #
               TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//; s/[._]/ /g' || true)
               YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}' || echo "")
 
               OUT="strm/Movies/$TITLE ($YEAR).strm"
+
               echo "$LINK" > "$OUT" || true
               echo "Created Movie STRM: $OUT"
 
             done
 
           done
+
+      - name: Create index.html (required for GitHub Pages)
+        run: |
+          echo "<h1>Real-Debrid STRM Library</h1>" > strm/index.html
+          echo "<ul>" >> strm/index.html
+          echo "<li><a href='Movies/'>Movies</a></li>" >> strm/index.html
+          echo "<li><a href='TV Shows/'>TV Shows</a></li>" >> strm/index.html
+          echo "</ul>" >> strm/index.html
 
       - name: Upload to Pages
         uses: actions/upload-pages-artifact@v3
