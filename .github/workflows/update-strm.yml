@@ -1,4 +1,4 @@
-name: Build Real-Debrid STRM Library (XML Indexing)
+name: Build Real-Debrid STRM Library (Simple Index + XML)
 
 on:
   workflow_dispatch:
@@ -26,16 +26,26 @@ jobs:
           mkdir -p strm/Movies
           mkdir -p "strm/TV Shows"
 
+      ##################################################
+      # Root index.html (Simple)
+      ##################################################
+      - name: Create Root Index
+        run: |
+          echo "<h1>RD STRM Library</h1>" > strm/index.html
+          echo "<ul>" >> strm/index.html
+          echo "<li><a href='Movies/'>Movies</a></li>" >> strm/index.html
+          echo "<li><a href='TV Shows/'>TV Shows</a></li>" >> strm/index.html
+          echo "</ul>" >> strm/index.html
+
       - name: Fetch RD Torrents
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" \
             > torrents.json
 
-      ###############################################
-      # Build STRM + filelist.xml
-      ###############################################
-
+      ##################################################
+      # Build STRM + RD Direct Links
+      ##################################################
       - name: Build STRM Files
         run: |
           set +e
@@ -48,13 +58,9 @@ jobs:
             ADDED=$(echo "$TORRENT" | jq -r '.added')
 
             [ -z "$ID" ] && continue
-            [ -z "$ADDED" ] && continue
 
             ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
-            if [ "$ADDED_EPOCH" -lt "$CUTOFF" ]; then
-              echo "Skipping old torrent: $NAME"
-              continue
-            fi
+            [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
             echo "Processing: $NAME"
 
@@ -74,7 +80,6 @@ jobs:
               EXT="${BASENAME##*.}"
 
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|m4v|webm)$ ]] && continue
-              [ -z "$LINK" ] && continue
               [ "$LINK" = "null" ] && continue
 
               echo "→ Unrestricting $BASENAME"
@@ -85,15 +90,14 @@ jobs:
                 "https://api.real-debrid.com/rest/1.0/unrestrict/link")
 
               DIRECT=$(echo "$UNR" | jq -r '.download')
-              [ -z "$DIRECT" ] && continue
               [ "$DIRECT" = "null" ] && continue
 
               ##################################################
-              # TV Episode
+              # TV Episodes
               ##################################################
               if [[ "$BASENAME" =~ S[0-9][0-9]E[0-9][0-9] ]]; then
 
-                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+[Ee][0-9]+.*//;s/[._]/ /g')
+                SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//;s/[._]/ /g')
                 RAWSEASON=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d S)
                 RAWEp=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d E)
 
@@ -110,7 +114,7 @@ jobs:
               fi
 
               ##################################################
-              # MOVIE
+              # MOVIES
               ##################################################
               TITLE=$(echo "$BASENAME" | sed -E 's/\.[0-9]{4}\..*//;s/[._]/ /g')
               YEAR=$(echo "$BASENAME" | grep -oE '[0-9]{4}' || echo "")
@@ -121,22 +125,21 @@ jobs:
             done
           done
 
-      ###############################################
-      # BUILD filelist.xml FOR EVERY FOLDER
-      ###############################################
-
+      ##################################################
+      # Build filelist.xml for Kodi
+      ##################################################
       - name: Generate filelist.xml
         run: |
           generate_xml() {
             DIR="$1"
-            FILE="$DIR/filelist.xml"
+            OUT="$DIR/filelist.xml"
+            echo "<files>" > "$OUT"
 
-            echo "<files>" > "$FILE"
             find "$DIR" -maxdepth 1 -type f -name "*.strm" | while read F; do
-              BASE=$(basename "$F")
-              echo "  <file>$BASE</file>" >> "$FILE"
+              echo "  <file>$(basename "$F")</file>" >> "$OUT"
             done
-            echo "</files>" >> "$FILE"
+
+            echo "</files>" >> "$OUT"
           }
 
           # Movies
@@ -152,10 +155,45 @@ jobs:
             done
           done
 
-      ###############################################
-      # DEPLOY TO GITHUB PAGES
-      ###############################################
-      - name: Upload Pages
+      ##################################################
+      # Build SIMPLE HTML Indexes
+      ##################################################
+      - name: Build Simple HTML Indexes
+        run: |
+          build_index() {
+            DIR="$1"
+            HTML="$DIR/index.html"
+
+            echo "<h2>Listing</h2><ul>" > "$HTML"
+
+            for item in "$DIR"/*; do
+              NAME=$(basename "$item")
+              if [ -d "$item" ]; then
+                echo "<li><a href='$NAME/'>$NAME/</a></li>" >> "$HTML"
+              elif [[ "$NAME" == *.strm ]]; then
+                echo "<li><a href='$NAME'>$NAME</a></li>" >> "$HTML"
+              fi
+            done
+
+            echo "</ul>" >> "$HTML"
+          }
+
+          build_index "strm/Movies"
+
+          for show in "strm/TV Shows"/*; do
+            [ -d "$show" ] || continue
+            build_index "$show"
+
+            for season in "$show"/Season*; do
+              [ -d "$season" ] || continue
+              build_index "$season"
+            done
+          done
+
+      ##################################################
+      # DEPLOY PAGE
+      ##################################################
+      - name: Upload GitHub Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: strm
