@@ -11,6 +11,7 @@ permissions:
   id-token: write
 
 jobs:
+
   build:
     runs-on: ubuntu-latest
 
@@ -34,7 +35,7 @@ jobs:
           printf "<h1>RD STRM Library</h1>\n<ul>\n<li><a href='Movies/'>Movies</a></li>\n<li><a href='TV_Shows/'>TV Shows</a></li>\n</ul>" \
             > site_root/index.html
 
-      - name: Fetch Real-Debrid data
+      - name: Fetch Real-Debrid Data
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/torrents" > torrents.json
@@ -45,10 +46,14 @@ jobs:
       - name: Build STRM library
         run: |
           set +e
-          TMDB_KEY="${{ secrets.TMDB_API_KEY }}"
+          TMDB="${{ secrets.TMDB_API_KEY }}"
           CUTOFF=$(date -d "15 days ago" +%s)
 
-          get_direct_cdn_url() {
+          clean_url() {
+            echo "$1" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//'
+          }
+
+          get_direct_cdn() {
             FILE="$1"
             jq -c ".[] | select(.filename == \"$FILE\" and .streamable == 1)" downloads.json \
               | jq -s "sort_by(.generated) | last | .download"
@@ -58,12 +63,11 @@ jobs:
 
             ID=$(echo "$TOR" | jq -r '.id')
             ADDED=$(echo "$TOR" | jq -r '.added')
-            ADDED_EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
-            [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
+            EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
+            [ "$EPOCH" -lt "$CUTOFF" ] && continue
 
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" \
-              > detail.json
+              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" > detail.json
 
             COUNT=$(jq '.files | length' detail.json)
 
@@ -72,9 +76,10 @@ jobs:
               FILE=$(jq -r ".files[$i].path" detail.json)
               BASENAME=$(basename "$FILE")
               EXT="${BASENAME##*.}"
+
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
 
-              DIRECT=$(get_direct_cdn_url "$BASENAME")
+              DIRECT=$(get_direct_cdn "$BASENAME")
 
               if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
                 LINK=$(jq -r ".links[$i]?" detail.json)
@@ -87,59 +92,63 @@ jobs:
 
               [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
 
+              DIRECT=$(clean_url "$DIRECT")
+
               ################################################################
               # TV SHOWS
               ################################################################
               if [[ "$BASENAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
 
-                RAW_SHOW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g')
-                CLEAN_SHOW=$(echo "$RAW_SHOW" | sed -E 's/ +/ /g')
-
+                RAW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g' | sed 's/  */ /g')
                 YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
+
                 if [ -n "$YEAR" ]; then
-                  SHOWDIR="site_root/TV_Shows/${CLEAN_SHOW} (${YEAR})"
+                  SHOWDIR="site_root/TV_Shows/${RAW} (${YEAR})"
                 else
-                  SHOWDIR="site_root/TV_Shows/${CLEAN_SHOW}"
+                  SHOWDIR="site_root/TV_Shows/${RAW}"
                 fi
                 mkdir -p "$SHOWDIR"
 
+                ################################################################
+                # Create tvshow.nfo (once)
+                ################################################################
                 if [ ! -f "$SHOWDIR/.tmdb_id" ]; then
-                  TVJSON=$(curl -s \
-                    "https://api.themoviedb.org/3/search/tv?api_key=$TMDB_KEY&query=$CLEAN_SHOW")
-                  SID=$(echo "$TVJSON" | jq -r '.results[0].id')
+                  SEARCH=$(curl -s \
+                    "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$RAW")
+                  SID=$(echo "$SEARCH" | jq -r '.results[0].id')
                   echo "$SID" > "$SHOWDIR/.tmdb_id"
 
-                  DETAILS=$(curl -s \
-                    "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB_KEY")
-                  PLOT=$(echo "$DETAILS" | jq -r '.overview // ""')
-                  RUNTIME=$(echo "$DETAILS" | jq -r '.episode_run_time[0] // 0')
+                  DETAIL=$(curl -s \
+                    "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
+                  PLOT=$(echo "$DETAIL" | jq -r '.overview // ""')
+                  RUNTIME=$(echo "$DETAIL" | jq -r '.episode_run_time[0] // 0')
 
                   printf "<tvshow>\n<title>%s</title>\n<plot>%s</plot>\n<runtime>%s</runtime>\n</tvshow>" \
-                    "$CLEAN_SHOW" "$PLOT" "$RUNTIME" \
-                    > "$SHOWDIR/tvshow.nfo"
+                    "$RAW" "$PLOT" "$RUNTIME" > "$SHOWDIR/tvshow.nfo"
                 fi
 
                 SID=$(cat "$SHOWDIR/.tmdb_id")
 
-                SNUM=$(echo "$BASENAME" | grep -oE '[Ss][0-9]+' | sed 's/S//I')
-                ENUM=$(echo "$BASENAME" | grep -oE '[Ee][0-9]+' | sed 's/E//I')
+                SNUM=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d 'S')
+                ENUM=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d 'E')
+
                 SNUM=$((10#$SNUM))
                 ENUM=$((10#$ENUM))
 
                 SEASON_DIR="$SHOWDIR/Season $(printf '%02d' $SNUM)"
                 mkdir -p "$SEASON_DIR"
 
-                STRM="$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
-                echo "$DIRECT" > "$STRM"
+                STRM="$SEASON_DIR/${RAW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
+                printf "%s" "$DIRECT" > "$STRM"
 
                 EPJSON=$(curl -s \
-                  "https://api.themoviedb.org/3/tv/$SID/season/$SNUM/episode/$ENUM?api_key=$TMDB_KEY")
+                  "https://api.themoviedb.org/3/tv/$SID/season/$SNUM/episode/$ENUM?api_key=$TMDB")
                 EPLOT=$(echo "$EPJSON" | jq -r '.overview // ""')
                 EDATE=$(echo "$EPJSON" | jq -r '.air_date // ""')
 
                 printf "<episodedetails>\n<title>%s</title>\n<season>%s</season>\n<episode>%s</episode>\n<aired>%s</aired>\n<plot>%s</plot>\n</episodedetails>" \
-                  "$CLEAN_SHOW" "$SNUM" "$ENUM" "$EDATE" "$EPLOT" \
-                  > "$SEASON_DIR/${CLEAN_SHOW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
+                  "$RAW" "$SNUM" "$ENUM" "$EDATE" "$EPLOT" \
+                  > "$SEASON_DIR/${RAW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
 
                 continue
               fi
@@ -147,23 +156,23 @@ jobs:
               ################################################################
               # MOVIES
               ################################################################
-              RAW=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
-              YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
-              TITLE=$(echo "$RAW" | sed -E "s/$YEAR.*//" | sed 's/  */ /g')
+              RAW2=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
+              YEAR=$(echo "$RAW2" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
+              TITLE=$(echo "$RAW2" | sed -E "s/$YEAR.*//" | sed 's/  */ /g')
 
               MOVIEDIR="site_root/Movies/${TITLE} (${YEAR})"
               mkdir -p "$MOVIEDIR"
 
-              echo "$DIRECT" > "$MOVIEDIR/${TITLE} (${YEAR}).strm"
+              printf "%s" "$DIRECT" > "$MOVIEDIR/${TITLE} (${YEAR}).strm"
 
-              MOVJSON=$(curl -s \
-                "https://api.themoviedb.org/3/search/movie?api_key=$TMDB_KEY&query=$TITLE")
-              MID=$(echo "$MOVJSON" | jq -r '.results[0].id')
+              MSEARCH=$(curl -s \
+                "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$TITLE")
+              MID=$(echo "$MSEARCH" | jq -r '.results[0].id')
 
-              DETAILS=$(curl -s \
-                "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB_KEY")
-              MPLOT=$(echo "$DETAILS" | jq -r '.overview // ""')
-              MRUN=$(echo "$DETAILS" | jq -r '.runtime // 0')
+              MDET=$(curl -s \
+                "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
+              MPLOT=$(echo "$MDET" | jq -r '.overview // ""')
+              MRUN=$(echo "$MDET" | jq -r '.runtime // 0')
 
               printf "<movie>\n<title>%s</title>\n<year>%s</year>\n<runtime>%s</runtime>\n<plot>%s</plot>\n</movie>" \
                 "$TITLE" "$YEAR" "$MRUN" "$MPLOT" \
@@ -198,7 +207,7 @@ jobs:
       - name: Delete Koofr directory
         run: |
           curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-            -X DELETE "${{ secrets.KOFR_URL }}"
+            -X DELETE "${{ secrets.KOFR_URL }}" || true
 
           curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
             -X MKCOL "${{ secrets.KOFR_URL }}"
