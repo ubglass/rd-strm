@@ -15,6 +15,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
 
       - name: Checkout repo
@@ -48,19 +52,19 @@ jobs:
           TMDB="${{ secrets.TMDB_API_KEY }}"
           CUTOFF=$(date -d "15 days ago" +%s)
 
-          # Clean URL (no quotes, no spaces, no newline)
+          # Clean URL (removes quotes, spaces, newline)
           clean_url() {
             echo "$1" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//'
           }
 
-          # Strict SxxEyy matching for episodes
+          # STRICT episode matching using SxxEyy pattern
           get_direct_cdn_episode() {
             PATTERN="$1"
             jq -c ".[] | select(.filename | test(\"$PATTERN\"; \"i\"))" downloads.json \
               | jq -s "sort_by(.generated) | last | .download"
           }
 
-          # Movie filename exact match
+          # Movie matching by exact filename
           get_direct_cdn_movie() {
             FILE="$1"
             jq -c ".[] | select(.filename == \"$FILE\")" downloads.json \
@@ -70,7 +74,7 @@ jobs:
           jq -c '.[]?' torrents.json | while read TOR; do
 
             ID=$(echo "$TOR" | jq -r '.id')
-            ADDED_EPOCH=$(date -d "$(echo "$TOR" | jq -r '.added')" +%s 2>/dev/null || echo 0)
+            ADDED_EPOCH=$(date -d "$(echo "$TOR" | jq -r '.added')" +%s || echo 0)
             [ "$ADDED_EPOCH" -lt "$CUTOFF" ] && continue
 
             curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
@@ -80,21 +84,21 @@ jobs:
 
             for i in $(seq 0 $((COUNT - 1))); do
 
-              FILE=$(jq -r ".files[$i].path" detail.json)
-              BASENAME=$(basename "$FILE")
+              FILEPATH=$(jq -r ".files[$i].path" detail.json)
+              BASENAME=$(basename "$FILEPATH")
               EXT="${BASENAME##*.}"
 
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
 
               ################################################################
-              # --------------------------- TV SHOWS --------------------------
+              # ------------------------------ TV SHOWS ----------------------
               ################################################################
               if [[ "$BASENAME" =~ [Ss][0-9]{2}[Ee][0-9]{2} ]]; then
 
-                RAW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g' | sed 's/  */ /g')
+                RAWTITLE=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g' | sed 's/  */ /g')
                 YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
 
-                # Extract episode numbers
+                # Extract SxxEyy
                 SNUM=$(echo "$BASENAME" | grep -oE 'S[0-9]{2}' | tr -d 'S')
                 ENUM=$(echo "$BASENAME" | grep -oE 'E[0-9]{2}' | tr -d 'E')
 
@@ -104,52 +108,43 @@ jobs:
                 PATTERN="S${SFX}E${EFX}"
 
                 ################################################################
-                # STRICT MATCH based on SxxEyy
+                # STRICT PATTERN MATCH
                 ################################################################
                 DIRECT=$(get_direct_cdn_episode "$PATTERN")
 
-                # Fallback to unrestrict if no match
-                if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
-
+                # Fallback unrestrict
+                if [[ -z "$DIRECT" || "$DIRECT" == "null" ]]; then
                   LINK=$(jq -r ".links[$i]" detail.json)
-
                   UNR=$(curl -s -X POST \
                     -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
                     -d "link=$LINK" \
                     "https://api.real-debrid.com/rest/1.0/unrestrict/link")
-
                   DIRECT=$(echo "$UNR" | jq -r '.download')
                 fi
 
-                # Skip if still nothing
-                [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
-
+                [[ -z "$DIRECT" || "$DIRECT" == "null" ]] && continue
                 DIRECT=$(clean_url "$DIRECT")
 
-                # Build show path
-                if [ -n "$YEAR" ]; then
-                  SHOWDIR="site_root/TV_Shows/${RAW} (${YEAR})"
+                # Build show directory
+                if [[ -n "$YEAR" ]]; then
+                  SHOWDIR="site_root/TV_Shows/${RAWTITLE} (${YEAR})"
                 else
-                  SHOWDIR="site_root/TV_Shows/${RAW}"
+                  SHOWDIR="site_root/TV_Shows/${RAWTITLE}"
                 fi
                 mkdir -p "$SHOWDIR"
 
                 ################################################################
-                # Create tvshow.nfo (once per show)
+                # Build tvshow.nfo only first time
                 ################################################################
-                if [ ! -f "$SHOWDIR/.tmdb_id" ]; then
-
-                  SEARCH=$(curl -s \
-                    "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$RAW")
-
+                if [[ ! -f "$SHOWDIR/.tmdb_id" ]]; then
+                  SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$RAWTITLE")
                   SID=$(echo "$SEARCH" | jq -r '.results[0].id')
                   echo "$SID" > "$SHOWDIR/.tmdb_id"
 
-                  DETAIL=$(curl -s \
-                    "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
+                  DETAIL=$(curl -s "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
 
                   printf "<tvshow>\n<title>%s</title>\n<plot>%s</plot>\n<runtime>%s</runtime>\n</tvshow>" \
-                    "$RAW" \
+                    "$RAWTITLE" \
                     "$(echo "$DETAIL" | jq -r '.overview // ""')" \
                     "$(echo "$DETAIL" | jq -r '.episode_run_time[0] // 0')" \
                     > "$SHOWDIR/tvshow.nfo"
@@ -158,47 +153,46 @@ jobs:
                 SID=$(cat "$SHOWDIR/.tmdb_id")
 
                 ################################################################
-                # Episode metadata + STRM
+                # Episode metadata & STRM
                 ################################################################
                 SEASON_DIR="$SHOWDIR/Season $SFX"
                 mkdir -p "$SEASON_DIR"
 
-                STRM="$SEASON_DIR/${RAW} S${SFX}E${EFX}.strm"
+                STRM="$SEASON_DIR/${RAWTITLE} S${SFX}E${EFX}.strm"
                 printf "%s" "$DIRECT" > "$STRM"
 
-                EPJSON=$(curl -s \
-                  "https://api.themoviedb.org/3/tv/$SID/season/$SNUM/episode/$ENUM?api_key=$TMDB")
+                EPJSON=$(curl -s "https://api.themoviedb.org/3/tv/$SID/season/$SNUM/episode/$ENUM?api_key=$TMDB")
 
                 printf "<episodedetails>\n<title>%s</title>\n<season>%s</season>\n<episode>%s</episode>\n<aired>%s</aired>\n<plot>%s</plot>\n</episodedetails>" \
-                  "$RAW" "$SNUM" "$ENUM" \
+                  "$RAWTITLE" "$SNUM" "$ENUM" \
                   "$(echo "$EPJSON" | jq -r '.air_date // ""')" \
                   "$(echo "$EPJSON" | jq -r '.overview // ""')" \
-                  > "$SEASON_DIR/${RAW} S${SFX}E${EFX}.nfo"
+                  > "$SEASON_DIR/${RAWTITLE} S${SFX}E${EFX}.nfo"
 
                 continue
               fi
 
               ################################################################
-              # ------------------------------ MOVIES -------------------------
+              # ------------------------------- MOVIES -----------------------
               ################################################################
-              RAW2=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
-              YEAR=$(echo "$RAW2" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
-              TITLE=$(echo "$RAW2" | sed -E "s/$YEAR.*//" | sed 's/  */ /g')
+
+              RAWCLEAN=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
+              YEAR=$(echo "$RAWCLEAN" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
+              TITLE=$(echo "$RAWCLEAN" | sed -E "s/$YEAR.*//" | sed 's/  */ /g')
 
               DIRECT=$(get_direct_cdn_movie "$BASENAME")
 
-              if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
+              if [[ -z "$DIRECT" || "$DIRECT" == "null" ]]; then
                 LINK=$(jq -r ".links[$i]" detail.json)
-
                 UNR=$(curl -s -X POST \
                   -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
                   -d "link=$LINK" \
                   "https://api.real-debrid.com/rest/1.0/unrestrict/link")
-
                 DIRECT=$(echo "$UNR" | jq -r '.download')
               fi
 
-              [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
+              [[ -z "$DIRECT" || "$DIRECT" == "null" ]] && continue
+
               DIRECT=$(clean_url "$DIRECT")
 
               MOVIEDIR="site_root/Movies/${TITLE} (${YEAR})"
@@ -206,13 +200,10 @@ jobs:
 
               printf "%s" "$DIRECT" > "$MOVIEDIR/${TITLE} (${YEAR}).strm"
 
-              MSEARCH=$(curl -s \
-                "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$TITLE")
-
+              MSEARCH=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$TITLE")
               MID=$(echo "$MSEARCH" | jq -r '.results[0].id')
 
-              MDET=$(curl -s \
-                "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
+              MDET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
 
               printf "<movie>\n<title>%s</title>\n<year>%s</year>\n<runtime>%s</runtime>\n<plot>%s</plot>\n</movie>" \
                 "$TITLE" "$YEAR" \
