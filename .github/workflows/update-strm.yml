@@ -1,251 +1,106 @@
-name: RD STRM Builder + Koofr Sync + GitHub Pages
+- name: Build STRM library
+  run: |
+    set +e
+    TMDB="${{ secrets.TMDB_API_KEY }}"
+    CUTOFF=$(date -d "15 days ago" +%s)
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 * * * *"
+    clean_url() {
+      echo "$1" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//'
+    }
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+    jq -c '.[]?' downloads.json | while read DL; do
 
-jobs:
+      GEN=$(echo "$DL" | jq -r '.generated')
+      [ "$GEN" -lt "$CUTOFF" ] && continue
 
-  build:
-    runs-on: ubuntu-latest
+      FILE=$(echo "$DL" | jq -r '.filename')
+      LINK=$(echo "$DL" | jq -r '.download')
+      STREAM=$(echo "$DL" | jq -r '.streamable')
 
-    steps:
+      [ "$STREAM" != "1" ] && continue
 
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      BASENAME=$(basename "$FILE")
+      CLEANNAME=$(echo "$BASENAME" | sed 's/\?.*//')
 
-      - name: Prepare site_root
-        run: |
-          rm -rf site_root
-          mkdir -p site_root/Movies
-          mkdir -p site_root/TV_Shows
+      EXT="${CLEANNAME##*.}"
+      [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
 
-      - name: Disable Jekyll
-        run: |
-          echo "theme: null" > site_root/_config.yml
+      # ----------------------------
+      # TV SHOW DETECTION
+      # ----------------------------
+      if [[ "$CLEANNAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
 
-      - name: Create root index
-        run: |
-          printf "<h1>RD STRM Library</h1>\n<ul>\n<li><a href='Movies/'>Movies</a></li>\n<li><a href='TV_Shows/'>TV Shows</a></li>\n</ul>" \
-            > site_root/index.html
+        RAW=$(echo "$CLEANNAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g' | sed 's/  */ /g')
+        YEAR=$(echo "$CLEANNAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
 
-      - name: Fetch Real-Debrid Data
-        run: |
-          curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-            "https://api.real-debrid.com/rest/1.0/torrents" > torrents.json
+        if [ -n "$YEAR" ]; then
+          SHOWDIR="site_root/TV_Shows/${RAW} (${YEAR})"
+        else
+          SHOWDIR="site_root/TV_Shows/${RAW}"
+        fi
 
-          curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-            "https://api.real-debrid.com/rest/1.0/downloads" > downloads.json
+        mkdir -p "$SHOWDIR"
 
-      - name: Build STRM library
-        run: |
-          set +e
-          TMDB="${{ secrets.TMDB_API_KEY }}"
-          CUTOFF=$(date -d "15 days ago" +%s)
+        # Create tvshow.nfo once
+        if [ ! -f "$SHOWDIR/.tmdb_id" ]; then
+          SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$RAW")
+          SID=$(echo "$SEARCH" | jq -r '.results[0].id')
+          echo "$SID" > "$SHOWDIR/.tmdb_id"
 
-          clean_url() {
-            echo "$1" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//'
-          }
+          DETAIL=$(curl -s "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
+          PLOT=$(echo "$DETAIL" | jq -r '.overview // ""')
+          RUNTIME=$(echo "$DETAIL" | jq -r '.episode_run_time[0] // 0')
 
-          # FIX: Use exact filename match only, DO NOT sort by generated timestamp
-          get_direct_cdn() {
-            TORRENT_ID="$1"
-            FILE="$2"
-            
-            # Query RD API for the *current torrent's* available links
-            curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-              "https://api.real-debrid.com/rest/1.0/torrents/info/$TORRENT_ID" \
-              | jq -r --arg FILE "$FILE" '
-                .links_available
-                | .[] 
-                | select(.filename == $FILE)
-                | .download
-              ' | head -n 1
-          }
+          printf "<tvshow>\n<title>%s</title>\n<plot>%s</plot>\n<runtime>%s</runtime>\n</tvshow>" \
+            "$RAW" "$PLOT" "$RUNTIME" > "$SHOWDIR/tvshow.nfo"
+        fi
 
-          jq -c '.[]?' torrents.json | while read TOR; do
+        SID=$(cat "$SHOWDIR/.tmdb_id")
 
-            ID=$(echo "$TOR" | jq -r '.id')
-            ADDED=$(echo "$TOR" | jq -r '.added')
-            EPOCH=$(date -d "$ADDED" +%s 2>/dev/null || echo 0)
-            [ "$EPOCH" -lt "$CUTOFF" ] && continue
+        SNUM=$(echo "$CLEANNAME" | grep -oE 'S[0-9]+' | tr -d 'S')
+        ENUM=$(echo "$CLEANNAME" | grep -oE 'E[0-9]+' | tr -d 'E')
 
-            curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-              "https://api.real-debrid.com/rest/1.0/torrents/info/$ID" > detail.json
+        SNUM=$((10#$SNUM))
+        ENUM=$((10#$ENUM))
 
-            COUNT=$(jq '.files | length' detail.json)
+        SEASON_DIR="$SHOWDIR/Season $(printf '%02d' $SNUM)"
+        mkdir -p "$SEASON_DIR"
 
-            for i in $(seq 0 $(($COUNT - 1))); do
+        STRM="$SEASON_DIR/${RAW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
+        printf "%s" "$LINK" > "$STRM"
 
-              FILE=$(jq -r ".files[$i].path" detail.json)
-              BASENAME=$(basename "$FILE")
-              EXT=$(echo "${BASENAME##*.}" | sed 's/?.*//')
+        EPJSON=$(curl -s "https://api.themoviedb.org/3/tv/$SID/season/$SNUM/episode/$ENUM?api_key=$TMDB")
+        EPLOT=$(echo "$EPJSON" | jq -r '.overview // ""')
+        EDATE=$(echo "$EPJSON" | jq -r '.air_date // ""')
 
-              [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
+        printf "<episodedetails>\n<title>%s</title>\n<season>%s</season>\n<episode>%s</episode>\n<aired>%s</aired>\n<plot>%s</plot>\n</episodedetails>" \
+          "$RAW" "$SNUM" "$ENUM" "$EDATE" "$EPLOT" \
+          > "$SEASON_DIR/${RAW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
 
-              DIRECT=$(get_direct_cdn "$ID" "$BASENAME")
+        continue
+      fi
 
-              if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
-                LINK=$(jq -r ".links[$i]?" detail.json)
-                UNR=$(curl -s -X POST \
-                  -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-                  -d "link=$LINK" \
-                  "https://api.real-debrid.com/rest/1.0/unrestrict/link")
-                DIRECT=$(echo "$UNR" | jq -r '.download')
-              fi
+      # ----------------------------
+      # MOVIES
+      # ----------------------------
+      RAW2=$(echo "$CLEANNAME" | sed -E 's/[._]/ /g')
+      YEAR=$(echo "$RAW2" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
+      TITLE=$(echo "$RAW2" | sed -E "s/$YEAR.*//" | sed 's/  */ /g')
 
-              [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ] && continue
+      MOVIEDIR="site_root/Movies/${TITLE} (${YEAR})"
+      mkdir -p "$MOVIEDIR"
 
-              DIRECT=$(clean_url "$DIRECT")
+      printf "%s" "$LINK" > "$MOVIEDIR/${TITLE} (${YEAR}).strm"
 
-              ################################################################
-              # TV SHOWS
-              ################################################################
-              if [[ "$BASENAME" =~ [Ss][0-9][0-9][Ee][0-9][0-9] ]]; then
+      MSEARCH=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$TITLE")
+      MID=$(echo "$MSEARCH" | jq -r '.results[0].id')
 
-                RAW=$(echo "$BASENAME" | sed -E 's/\.[Ss][0-9]+.*//' | sed 's/[._]/ /g' | sed 's/  */ /g')
-                YEAR=$(echo "$BASENAME" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
+      MDET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
+      MPLOT=$(echo "$MDET" | jq -r '.overview // ""')
+      MRUN=$(echo "$MDET" | jq -r '.runtime // 0')
 
-                if [ -n "$YEAR" ]; then
-                  SHOWDIR="site_root/TV_Shows/${RAW} (${YEAR})"
-                else
-                  SHOWDIR="site_root/TV_Shows/${RAW}"
-                fi
-                mkdir -p "$SHOWDIR"
+      printf "<movie>\n<title>%s</title>\n<year>%s</year>\n<runtime>%s</runtime>\n<plot>%s</plot>\n</movie>" \
+        "$TITLE" "$YEAR" "$MRUN" "$MPLOT" \
+        > "$MOVIEDIR/movie.nfo"
 
-                ################################################################
-                # Create tvshow.nfo (once)
-                ################################################################
-                if [ ! -f "$SHOWDIR/.tmdb_id" ]; then
-                  SEARCH=$(curl -s \
-                    "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$RAW")
-                  SID=$(echo "$SEARCH" | jq -r '.results[0].id')
-                  echo "$SID" > "$SHOWDIR/.tmdb_id"
-
-                  DETAIL=$(curl -s \
-                    "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
-                  PLOT=$(echo "$DETAIL" | jq -r '.overview // ""')
-                  RUNTIME=$(echo "$DETAIL" | jq -r '.episode_run_time[0] // 0')
-
-                  printf "<tvshow>\n<title>%s</title>\n<plot>%s</plot>\n<runtime>%s</runtime>\n</tvshow>" \
-                    "$RAW" "$PLOT" "$RUNTIME" > "$SHOWDIR/tvshow.nfo"
-                fi
-
-                SID=$(cat "$SHOWDIR/.tmdb_id")
-
-                SNUM=$(echo "$BASENAME" | grep -oE 'S[0-9]+' | tr -d 'S')
-                ENUM=$(echo "$BASENAME" | grep -oE 'E[0-9]+' | tr -d 'E')
-
-                SNUM=$((10#$SNUM))
-                ENUM=$((10#$ENUM))
-
-                SEASON_DIR="$SHOWDIR/Season $(printf '%02d' $SNUM)"
-                mkdir -p "$SEASON_DIR"
-
-                STRM="$SEASON_DIR/${RAW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).strm"
-                printf "%s" "$DIRECT" > "$STRM"
-
-                EPJSON=$(curl -s \
-                  "https://api.themoviedb.org/3/tv/$SID/season/$SNUM/episode/$ENUM?api_key=$TMDB")
-                EPLOT=$(echo "$EPJSON" | jq -r '.overview // ""')
-                EDATE=$(echo "$EPJSON" | jq -r '.air_date // ""')
-
-                printf "<episodedetails>\n<title>%s</title>\n<season>%s</season>\n<episode>%s</episode>\n<aired>%s</aired>\n<plot>%s</plot>\n</episodedetails>" \
-                  "$RAW" "$SNUM" "$ENUM" "$EDATE" "$EPLOT" \
-                  > "$SEASON_DIR/${RAW} S$(printf '%02d' $SNUM)E$(printf '%02d' $ENUM).nfo"
-
-                continue
-              fi
-
-              ################################################################
-              # MOVIES
-              ################################################################
-              RAW2=$(echo "$BASENAME" | sed -E 's/[._]/ /g')
-              YEAR=$(echo "$RAW2" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
-              TITLE=$(echo "$RAW2" | sed -E "s/$YEAR.*//" | sed 's/  */ /g')
-
-              MOVIEDIR="site_root/Movies/${TITLE} (${YEAR})"
-              mkdir -p "$MOVIEDIR"
-
-              printf "%s" "$DIRECT" > "$MOVIEDIR/${TITLE} (${YEAR}).strm"
-
-              MSEARCH=$(curl -s \
-                "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$TITLE")
-              MID=$(echo "$MSEARCH" | jq -r '.results[0].id')
-
-              MDET=$(curl -s \
-                "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
-              MPLOT=$(echo "$MDET" | jq -r '.overview // ""')
-              MRUN=$(echo "$MDET" | jq -r '.runtime // 0')
-
-              printf "<movie>\n<title>%s</title>\n<year>%s</year>\n<runtime>%s</runtime>\n<plot>%s</plot>\n</movie>" \
-                "$TITLE" "$YEAR" "$MRUN" "$MPLOT" \
-                > "$MOVIEDIR/movie.nfo"
-
-            done
-          done
-
-      - name: Build directory indexes
-        run: |
-          find site_root -type d | while read DIR; do
-            HTML="$DIR/index.html"
-            printf "<h2>%s</h2><ul>" "$(basename "$DIR")" > "$HTML"
-
-            for ITEM in "$DIR"/*; do
-              NAME=$(basename "$ITEM")
-              if [ -d "$ITEM" ]; then
-                printf "<li><a href='%s/'>%s/</a></li>" "$NAME" "$NAME" >> "$HTML"
-              else
-                printf "<li><a href='%s'>%s</a></li>" "$NAME" "$NAME" >> "$HTML"
-              fi
-            done
-
-            printf "</ul>" >> "$HTML"
-          done
-
-      - name: Upload artifact for GitHub Pages
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site_root
-
-      - name: Delete Koofr directory
-        run: |
-          curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-            -X DELETE "${{ secrets.KOFR_URL }}" || true
-
-          curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-            -X MKCOL "${{ secrets.KOFR_URL }}"
-
-      - name: Upload to Koofr
-        run: |
-          cd site_root
-          encode() { echo "$1" | sed 's/ /%20/g'; }
-
-          find . -type d | while read DIR; do
-            PATHENC=$(encode "${DIR#./}")
-            curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-              -X MKCOL "${{ secrets.KOFR_URL }}$PATHENC/" || true
-          done
-
-          find . -type f | while read FILE; do
-            PATHENC=$(encode "${FILE#./}")
-            curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-              -T "$FILE" "${{ secrets.KOFR_URL }}$PATHENC" || true
-          done
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-
-    steps:
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
+    done
