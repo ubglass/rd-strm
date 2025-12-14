@@ -231,31 +231,47 @@ jobs:
           done
 
           ########################################################
-          # BUILD MOVIE OUTPUT
+          # BUILD MOVIE OUTPUT (WITH NFO TEMPLATE)
           ########################################################
           echo "== BUILDING MOVIE OUTPUT =="
-
+          
+          TEMPLATE="templates/movie_template.nfo"
+          
           for KEY in "${!MOV_MAP[@]}"; do
             META="${MOV_META[$KEY]}"
             IFS='|' read MID MNAME MYEAR TS <<< "$META"
-
+          
             MV=$(safe "$MNAME")
             MD="site_root/Movies/${MV} (${MYEAR})"
             mkdir -p "$MD"
-
+          
             echo "[DEBUG] Creating movie folder: $MD"
-
+          
+            # Create STRM file
             echo "${MOV_MAP[$KEY]}" > "$MD/${MV} (${MYEAR}).strm"
-
+          
+            # Fetch TMDB metadata
             DET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
             PLOT=$(echo "$DET" | jq -r '.overview // ""')
-            RUNTIME=$(echo "$DET" | jq -r '.runtime // 0')
-
-            printf "<movie><title>%s</title><year>%s</year><runtime>%s</runtime><plot>%s</plot></movie>" \
-              "$(escape "$MNAME")" "$MYEAR" "$RUNTIME" "$(escape "$PLOT")" \
-              > "$MD/movie.nfo"
-
-            echo "[OK] Movie created: $MD"
+            POSTER=$(echo "$DET" | jq -r '.poster_path // ""')
+            FANART=$(echo "$DET" | jq -r '.backdrop_path // ""')
+          
+            # Build final URLs or empty
+            [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
+            [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
+          
+            # Load template and replace variables
+            NFO="$MD/movie.nfo"
+            cp "$TEMPLATE" "$NFO"
+          
+            sed -i "s|{TITLE}|$(escape "$MNAME")|g" "$NFO"
+            sed -i "s|{YEAR}|$MYEAR|g" "$NFO"
+            sed -i "s|{TMDB_ID}|$MID|g" "$NFO"
+            sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO"
+            sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO"
+            sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO"
+          
+            echo "[OK] Movie generated with NFO: $NFO"
           done
 
       - name: Upload to Koofr
