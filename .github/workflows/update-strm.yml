@@ -46,7 +46,8 @@ jobs:
 
           echo "Processing RD downloads…"
 
-          jq -c '.[]?' downloads.json | while read DL; do
+          DLIST=$(jq -c 'if type=="array" then . else [] end' downloads.json 2>/dev/null || echo "[]")
+          echo "$DLIST" | jq -c '.[]' | while read DL; do
 
             GEN_RAW=$(echo "$DL" | jq -r '.generated')
             GEN_EPOCH=$(date -d "$GEN_RAW" +%s 2>/dev/null || echo 0)
@@ -177,8 +178,6 @@ jobs:
           # -------------------------------
           # BUILD MOVIES
           # -------------------------------
-          echo "---- DEBUG: entering MOVIE BLOCK ----"
-          set -x
           for KEY in "${!MOV_MAP[@]}"; do
             META="${MOV_META[$KEY]}"
             IFS='|' read GEN MID NAME YEAR <<< "$META"
