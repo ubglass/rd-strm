@@ -248,7 +248,8 @@ jobs:
             echo "[DEBUG] Creating movie folder: $MD"
           
             # Create STRM file
-            echo "${MOV_MAP[$KEY]}" > "$MD/${MV} (${MYEAR}).strm"
+            STRM_PATH="$MD/${MV} (${MYEAR}).strm"
+            echo "${MOV_MAP[$KEY]}" > "$STRM_PATH"
           
             # Fetch TMDB metadata
             DET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
@@ -260,19 +261,21 @@ jobs:
             [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
             [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
           
+            # NFO file name must match STRM name
+            NFO_PATH="$MD/${MV} (${MYEAR}).nfo"
+          
             # Load template and replace variables
-            NFO="$MD/movie.nfo"
-            cp "$TEMPLATE" "$NFO"
+            cp "$TEMPLATE" "$NFO_PATH"
           
-            sed -i "s|{TITLE}|$(escape "$MNAME")|g" "$NFO"
-            sed -i "s|{YEAR}|$MYEAR|g" "$NFO"
-            sed -i "s|{TMDB_ID}|$MID|g" "$NFO"
-            sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO"
-            sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO"
-            sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO"
+            sed -i "s|{TITLE}|$(escape "$MNAME")|g" "$NFO_PATH"
+            sed -i "s|{YEAR}|$MYEAR|g" "$NFO_PATH"
+            sed -i "s|{TMDB_ID}|$MID|g" "$NFO_PATH"
+            sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO_PATH"
+            sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO_PATH"
+            sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
           
-            echo "[OK] Movie generated with NFO: $NFO"
-          done
+            echo "[OK] Movie generated: $STRM_PATH + NFO: $NFO_PATH"
+done
 
       - name: Upload to Koofr
         run: |
