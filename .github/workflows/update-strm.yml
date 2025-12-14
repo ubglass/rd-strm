@@ -195,39 +195,48 @@ jobs:
           echo "===================="
 
           ########################################################
-          # BUILD TV OUTPUT
+          # BUILD TV SHOW NFO (SHOW LEVEL ONLY)
           ########################################################
-          echo "== BUILDING TV OUTPUT =="
-
-          for KEY in "${!EP_MAP[@]}"; do
-            META="${EP_META[$KEY]}"
-            IFS='|' read TID TNAME TYEAR S E TS <<< "$META"
-
-            SHOW=$(safe "$TNAME")
-            SHOWDIR="site_root/TV_Shows/${SHOW} (${TYEAR})"
-            mkdir -p "$SHOWDIR"
-
-            echo "[DEBUG] Creating show folder: $SHOWDIR"
-
-            if [ ! -f "$SHOWDIR/tvshow.nfo" ]; then
-              DET=$(curl -s "https://api.themoviedb.org/3/tv/$TID?api_key=$TMDB")
-              PLOT=$(echo "$DET" | jq -r '.overview // ""')
-              RUNTIME=$(echo "$DET" | jq -r '.episode_run_time[0] // 0')
-
-              printf "<tvshow><title>%s</title><plot>%s</plot><runtime>%s</runtime></tvshow>" \
-                "$(escape "$TNAME")" "$(escape "$PLOT")" "$RUNTIME" \
-                > "$SHOWDIR/tvshow.nfo"
-            fi
-
-            SNAME="Season $(printf '%02d' "$S")"
-            SD="$SHOWDIR/$SNAME"
-            mkdir -p "$SD"
-            echo "[DEBUG] Creating season: $SD"
-
-            STRM="$SD/${SHOW} (${TYEAR}) - S$(printf '%02d' "$S")E$(printf '%02d' "$E").strm"
-            echo "${EP_MAP[$KEY]}" > "$STRM"
-
-            echo "[OK] Episode created: $STRM"
+          
+          echo "== BUILDING TV SHOW NFO =="
+          
+          SHOW_TEMPLATE="templates/tvshow_template.nfo"
+          
+          for SHOWKEY in "${!SHOW_META[@]}"; do
+            META="${SHOW_META[$SHOWKEY]}"
+            IFS='|' read SID SNAME SYEAR <<< "$META"
+          
+            SAFE_SHOW=$(safe "$SNAME")
+            SHOW_FOLDER="${SAFE_SHOW} (${SYEAR})"
+            SDIR="site_root/TV_Shows/$SHOW_FOLDER"
+            mkdir -p "$SDIR"
+          
+            echo "[DEBUG] Creating show folder: $SDIR"
+          
+            # Fetch TMDB show metadata
+            DETAIL=$(curl -s "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
+          
+            PLOT=$(echo "$DETAIL" | jq -r '.overview // ""')
+            POSTER=$(echo "$DETAIL" | jq -r '.poster_path // ""')
+            FANART=$(echo "$DETAIL" | jq -r '.backdrop_path // ""')
+          
+            [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
+            [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
+          
+            # Create NFO filename matching folder name:
+            NFO_PATH="$SDIR/${SHOW_FOLDER}.nfo"
+          
+            # Copy and replace variables
+            cp "$SHOW_TEMPLATE" "$NFO_PATH"
+          
+            sed -i "s|{TITLE}|$(escape "$SNAME")|g" "$NFO_PATH"
+            sed -i "s|{YEAR}|$SYEAR|g" "$NFO_PATH"
+            sed -i "s|{TMDB_ID}|$SID|g" "$NFO_PATH"
+            sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO_PATH"
+            sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO_PATH"
+            sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
+          
+            echo "[OK] Created show NFO: $NFO_PATH"
           done
 
           ########################################################
