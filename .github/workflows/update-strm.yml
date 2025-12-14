@@ -209,7 +209,7 @@ jobs:
             EAIR=$(echo "$EDET" | jq -r '.air_date // ""')
             EID=$(echo "$EDET" | jq -r '.id // ""')
 
-            NFO_FILE="$SD/S$(printf '%02d' "$S")E$(printf '%02d' "$E").nfo"
+            NFO_FILE="$SD/${SHOW} (${TYEAR}) - S$(printf '%02d' "$S")E$(printf '%02d' "$E").nfo"
 
             printf "<episodedetails>
             <title>%s</title>
@@ -254,7 +254,7 @@ jobs:
             <id>%s</id>
             </movie>" \
             "$(escape "$MNAME")" "$MYEAR" "$RUNTIME" "$(escape "$PLOT")" "$MID" "$MID" \
-            > "$MD/movie.nfo"
+            > "$MD/${MV} (${MYEAR}).nfo"
 
           done
 
