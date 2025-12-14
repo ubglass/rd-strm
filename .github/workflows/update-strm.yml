@@ -1,84 +1,98 @@
-name: RD STRM Builder (Stable + Artwork URLs)
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 * * * *"
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Install tools
-        run: sudo apt-get install -y jq
-
-      - name: Prepare workspace
-        run: |
-          rm -rf site_root
-          mkdir -p site_root/Movies
-          mkdir -p site_root/TV_Shows
-
-      - name: Fetch RD downloads
-        run: |
-          curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
-            "https://api.real-debrid.com/rest/1.0/downloads" \
-            | jq "." > rd.json
-
-      - name: Process items
+      - name: Process items (FULL DEBUG)
         run: |
           TMDB="${{ secrets.TMDB_API_KEY }}"
 
+          echo ""
+          echo "========== RD DOWNLOADS =========="
+          jq -r '.[].filename' rd.json
+          echo "=================================="
+          echo ""
+
+          # Count
+          TOTAL=$(jq length rd.json)
+          echo "[INFO] Total RD items: $TOTAL"
+
           jq -c '.[]' rd.json | while read ITEM; do
+            echo ""
+            echo "================ NEW ITEM ================"
+            echo "$ITEM" | jq '.'
+            echo "=========================================="
+
             FN=$(echo "$ITEM" | jq -r '.filename')
             DL=$(echo "$ITEM" | jq -r '.download')
 
-            # Detect movie by year
-            YEAR=$(echo "$FN" | grep -oE '(19|20)[0-9]{2}' | head -1)
+            echo "[INFO] Processing filename: $FN"
+            echo "[INFO] Stream link: $DL"
 
-            # Detect SxxEyy
+            ###############################################
+            # DETECT YEAR
+            ###############################################
+            YEAR=$(echo "$FN" | grep -oE '(19|20)[0-9]{2}' | head -1)
+            echo "[DEBUG] Extracted YEAR: '$YEAR'"
+
+            ###############################################
+            # DETECT EPISODE
+            ###############################################
             if [[ "$FN" =~ S([0-9]{2})E([0-9]{2}) ]]; then
               S=${BASH_REMATCH[1]}
               E=${BASH_REMATCH[2]}
+              echo "[DEBUG] Episode detected: S$S E$E"
             else
               S=""
               E=""
+              echo "[DEBUG] Episode NOT detected"
             fi
 
-            ###############################################
-            # MOVIE PROCESSING
-            ###############################################
+            #############################################################
+            # MOVIE LOGIC
+            #############################################################
             if [ -n "$YEAR" ] && [ -z "$S" ]; then
+              echo "[INFO] Identified as MOVIE"
+
               NAME=$(echo "$FN" | sed -E 's/\.[^.]+$//' | sed -E "s/$YEAR.*//" | sed 's/\.$//')
+              echo "[DEBUG] Movie NAME: '$NAME'"
 
-              # TMDB search
               Q=$(jq -rn --arg v "$NAME" '$v|@uri')
+              echo "[DEBUG] TMDB Search Query: $Q"
+              echo "[DEBUG] TMDB Movie Search URL:"
+              echo "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$Q&year=$YEAR"
+
               RES=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$Q&year=$YEAR")
+              echo "[DEBUG] TMDB Search Response:"
+              echo "$RES" | jq '.'
+
               MID=$(echo "$RES" | jq -r '.results[0].id // empty')
+              echo "[DEBUG] TMDB Movie ID: '$MID'"
 
-              [ -z "$MID" ] && continue
+              if [ -z "$MID" ]; then
+                echo "[WARN] Skipping MOVIE – TMDB match NOT found"
+                continue
+              fi
 
-              # TMDB details
               DET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
+              echo "[DEBUG] TMDB Movie Details:"
+              echo "$DET" | jq '.'
 
               PLOT=$(echo "$DET" | jq -r '.overview // ""')
               RUNTIME=$(echo "$DET" | jq -r '.runtime // 0')
               DATE=$(echo "$DET" | jq -r '.release_date // ""')
-              POSTER=$(echo "$DET" | jq -r '.poster_path // ""')
-              FANART=$(echo "$DET" | jq -r '.backdrop_path // ""')
+              POSTER=$(echo "$DET" | jq -r '.poster_path // empty')
+              FANART=$(echo "$DET" | jq -r '.backdrop_path // empty')
+
+              echo "[DEBUG] POSTER: $POSTER"
+              echo "[DEBUG] FANART: $FANART"
 
               MD="site_root/Movies/${NAME} (${YEAR})"
+              echo "[INFO] Creating Movie Directory: $MD"
               mkdir -p "$MD"
 
               STRM="$MD/${NAME} (${YEAR}).strm"
               NFO="$MD/${NAME} (${YEAR}).nfo"
 
+              echo "[INFO] Writing STRM: $STRM"
               echo "$DL" > "$STRM"
 
-              # MOVIE NFO (printf only)
+              echo "[INFO] Writing Movie NFO: $NFO"
               printf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" > "$NFO"
               printf "<movie>\n" >> "$NFO"
               printf "  <title>%s</title>\n" "$NAME" >> "$NFO"
@@ -93,37 +107,50 @@ jobs:
               printf "  <fanart>https://image.tmdb.org/t/p/w500%s</fanart>\n" "$FANART" >> "$NFO"
               printf "</movie>\n" >> "$NFO"
 
+              echo "[INFO] Movie processed successfully"
               continue
             fi
 
-            ###############################################
-            # TV EPISODE PROCESSING
-            ###############################################
+            #############################################################
+            # TV SHOW LOGIC
+            #############################################################
             if [ -n "$S" ] && [ -n "$E" ]; then
-              # Extract show name
+              echo "[INFO] Identified as TV EPISODE"
+
               SHOWNAME=$(echo "$FN" | sed -E 's/S[0-9]{2}E[0-9]{2}.*//' | sed -E 's/\.[^.]+$//')
-              YEAR=$(echo "$FN" | grep -oE '(19|20)[0-9]{2}' | head -1)
+              echo "[DEBUG] Episode Show Name: '$SHOWNAME'"
 
-              [ -z "$YEAR" ] && continue
-
+              echo "[DEBUG] TMDB TV Search:"
               Q=$(jq -rn --arg v "$SHOWNAME" '$v|@uri')
+              echo "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$Q&first_air_date_year=$YEAR"
+
               RES=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$Q&first_air_date_year=$YEAR")
+              echo "$RES" | jq '.'
+
               TID=$(echo "$RES" | jq -r '.results[0].id // empty')
+              echo "[DEBUG] TV TMDB ID: '$TID'"
 
-              [ -z "$TID" ] && continue
+              if [ -z "$TID" ]; then
+                echo "[WARN] Skipping EPISODE – No matching TV show found"
+                continue
+              fi
 
-              # Show details
               SDET=$(curl -s "https://api.themoviedb.org/3/tv/$TID?api_key=$TMDB")
+              echo "[DEBUG] TV Show Details:"
+              echo "$SDET" | jq '.'
+
               TPLOT=$(echo "$SDET" | jq -r '.overview // ""')
               TPREM=$(echo "$SDET" | jq -r '.first_air_date // ""')
               TPOSTER=$(echo "$SDET" | jq -r '.poster_path // ""')
               TFANART=$(echo "$SDET" | jq -r '.backdrop_path // ""')
 
               SHOWDIR="site_root/TV_Shows/${SHOWNAME} (${YEAR})"
+              echo "[INFO] Creating Show Directory: $SHOWDIR"
               mkdir -p "$SHOWDIR"
 
-              # TVSHOW NFO
+              # tvshow.nfo
               if [ ! -f "$SHOWDIR/tvshow.nfo" ]; then
+                echo "[INFO] Writing TV Show NFO"
                 NFO="$SHOWDIR/tvshow.nfo"
                 printf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" > "$NFO"
                 printf "<tvshow>\n" >> "$NFO"
@@ -139,7 +166,11 @@ jobs:
               fi
 
               # EPISODE DETAILS
+              echo "[DEBUG] TMDB Episode Details:"
+              echo "https://api.themoviedb.org/3/tv/$TID/season/$((10#$S))/episode/$((10#$E))?api_key=$TMDB"
+
               EDET=$(curl -s "https://api.themoviedb.org/3/tv/$TID/season/$((10#$S))/episode/$((10#$E))?api_key=$TMDB")
+              echo "$EDET" | jq '.'
 
               EP_TITLE=$(echo "$EDET" | jq -r '.name // ""')
               EP_PLOT=$(echo "$EDET" | jq -r '.overview // ""')
@@ -148,7 +179,10 @@ jobs:
               EP_ID=$(echo "$EDET" | jq -r '.id // ""')
               EP_STILL=$(echo "$EDET" | jq -r '.still_path // ""')
 
+              echo "[DEBUG] Episode Still: $EP_STILL"
+
               SEASON_DIR="$SHOWDIR/Season $((10#$S))"
+              echo "[INFO] Creating Season Dir: $SEASON_DIR"
               mkdir -p "$SEASON_DIR"
 
               BASE="${SHOWNAME} (${YEAR}) - S$(printf '%02d' "$S")E$(printf '%02d' "$E")"
@@ -156,9 +190,11 @@ jobs:
               STRM="$SEASON_DIR/${BASE}.strm"
               NFO="$SEASON_DIR/${BASE}.nfo"
 
+              echo "[INFO] Writing Episode STRM: $STRM"
               echo "$DL" > "$STRM"
 
-              # EPISODE NFO
+              # EP NFO
+              echo "[INFO] Writing Episode NFO: $NFO"
               printf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" > "$NFO"
               printf "<episodedetails>\n" >> "$NFO"
               printf "  <title>%s</title>\n" "$EP_TITLE" >> "$NFO"
@@ -172,15 +208,10 @@ jobs:
               printf "  <thumb>https://image.tmdb.org/t/p/w500%s</thumb>\n" "$EP_STILL" >> "$NFO"
               printf "</episodedetails>\n" >> "$NFO"
 
+              echo "[INFO] Episode processed successfully"
+              continue
             fi
 
-          done
+            echo "[WARN] ITEM WAS NOT RECOGNIZED AS MOVIE OR EPISODE → SKIPPED"
 
-      - name: Upload to Koofr
-        run: |
-          find site_root -type f | while read FILE; do
-            REL=$(echo "$FILE" | sed 's#site_root/##')
-            DEST="${{ secrets.KOFR_URL }}$(printf '%s' "$REL" | sed 's/ /%20/g')"
-            echo "Uploading: $REL"
-            curl -s -T "$FILE" -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" "$DEST"
           done
