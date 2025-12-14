@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<movie>
+    <title>{TITLE}</title>
+    <originaltitle>{TITLE}</originaltitle>
+    <year>{YEAR}</year>
+    <id>{TMDB_ID}</id>
+    <thumb aspect="poster">{POSTER_URL}</thumb>
+    <fanart>
+        <thumb>{FANART_URL}</thumb>
+    </fanart>
+    <plot>{PLOT}</plot>
+</movie>
