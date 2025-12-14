@@ -177,6 +177,8 @@ jobs:
           # -------------------------------
           # BUILD MOVIES
           # -------------------------------
+          echo "---- DEBUG: entering MOVIE BLOCK ----"
+          set -x
           for KEY in "${!MOV_MAP[@]}"; do
             META="${MOV_META[$KEY]}"
             IFS='|' read GEN MID NAME YEAR <<< "$META"
