@@ -240,6 +240,66 @@ jobs:
           done
 
           ########################################################
+          # BUILD TV EPISODE STRM + NFO (MATCHES STRM NAME)
+          ########################################################
+          
+          echo "== BUILDING TV EPISODES =="
+          
+          EP_TEMPLATE="templates/tvepisode_template.nfo"
+          
+          for EKEY in "${!EP_MAP[@]}"; do
+            META="${EP_META[$EKEY]}"
+            IFS='|' read SID SNAME SYEAR SEASON EPISODE TS <<< "$META"
+          
+            SAFE_SHOW=$(safe "$SNAME")
+            SHOW_FOLDER="${SAFE_SHOW} (${SYEAR})"
+            SEASON_FOLDER=$(printf "Season %02d" "$SEASON")
+          
+            EDIR="site_root/TV_Shows/$SHOW_FOLDER/$SEASON_FOLDER"
+            mkdir -p "$EDIR"
+          
+            ########################################################
+            # STRM filename (must match NFO filename)
+            ########################################################
+            BASE="${SAFE_SHOW} S$(printf '%02d' "$SEASON")E$(printf '%02d' "$EPISODE")"
+            STRM_PATH="$EDIR/$BASE.strm"
+          
+            echo "${EP_MAP[$EKEY]}" > "$STRM_PATH"
+            echo "[OK] Episode STRM created: $STRM_PATH"
+          
+            ########################################################
+            # Fetch TMDB Episode Metadata
+            ########################################################
+            EPDATA=$(curl -s "https://api.themoviedb.org/3/tv/$SID/season/$SEASON/episode/$EPISODE?api_key=$TMDB")
+          
+            ETITLE=$(echo "$EPDATA" | jq -r '.name // ""')
+            EPLOT=$(echo "$EPDATA" | jq -r '.overview // ""')
+            AIRDATE=$(echo "$EPDATA" | jq -r '.air_date // ""')
+            STILL=$(echo "$EPDATA" | jq -r '.still_path // ""')
+            EPID=$(echo "$EPDATA" | jq -r '.id // ""')
+          
+            [ "$STILL" != "" ] && THUMB_URL="https://image.tmdb.org/t/p/original${STILL}" || THUMB_URL=""
+          
+            ########################################################
+            # Episode NFO (filename must match STRM)
+            ########################################################
+            NFO_PATH="$EDIR/$BASE.nfo"
+            cp "$EP_TEMPLATE" "$NFO_PATH"
+          
+            sed -i "s|{TITLE}|$(escape "$ETITLE")|g" "$NFO_PATH"
+            sed -i "s|{SEASON}|$SEASON|g" "$NFO_PATH"
+            sed -i "s|{EPISODE}|$EPISODE|g" "$NFO_PATH"
+            sed -i "s|{AIRDATE}|$AIRDATE|g" "$NFO_PATH"
+            sed -i "s|{PLOT}|$(escape "$EPLOT")|g" "$NFO_PATH"
+            sed -i "s|{THUMB_URL}|$THUMB_URL|g" "$NFO_PATH"
+            sed -i "s|{TMDB_EPISODE_ID}|$EPID|g" "$NFO_PATH"
+          
+            echo "[OK] Episode NFO created: $NFO_PATH"
+          
+          done
+
+
+          ########################################################
           # BUILD MOVIE OUTPUT (WITH NFO TEMPLATE)
           ########################################################
           echo "== BUILDING MOVIE OUTPUT =="
