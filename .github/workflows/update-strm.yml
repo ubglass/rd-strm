@@ -194,7 +194,17 @@ jobs:
         run: |
           find site_root -type f | while read FILE; do
             REL=$(echo "$FILE" | sed 's#site_root/##')
-            DEST="${{ secrets.KOFR_URL }}$(printf '%s' "$REL" | sed 's/ /%20/g')"
-            echo "Uploading $REL"
-            curl -s -T "$FILE" -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" "$DEST"
+            ENC_REL=$(printf '%s' "$REL" | sed 's/ /%20/g')
+            DEST="${{ secrets.KOFR_URL }}$ENC_REL"
+            
+            echo "Uploading $REL -> $DEST"
+            RESPONSE=$(curl -s -w "%{http_code}" -T "$FILE" -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" "$DEST")
+            HTTP_CODE="${RESPONSE: -3}"
+            
+            if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Uploaded $REL (HTTP $HTTP_CODE)"
+            else
+              echo "❌ Failed $REL (HTTP $HTTP_CODE)"
+              echo "Response: ${RESPONSE%???}"
+            fi
           done
