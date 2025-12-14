@@ -68,23 +68,19 @@ jobs:
 
             # REMOTE artwork URLs
             POSTER_URL="https://image.tmdb.org/t/p/w500$POSTER"
-            FANART_URL="https://image.tmdb.org/t/p/w500$FANART"
-
-            cat > "$MD/${NAME} (${YEAR}).nfo" <<'EOF'
-            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-            <movie>
-              <title>${NAME}</title>
-              <originaltitle>${NAME}</originaltitle>
-              <year>${YEAR}</year>
-              <premiered>${DATE}</premiered>
-              <plot>${PLOT}</plot>
-              <runtime>${RUNTIME}</runtime>
-              <uniqueid type="tmdb" default="true">${MID}</uniqueid>
-              <id>${MID}</id>
-              <thumb>${POSTER_URL}</thumb>
-              <fanart>${FANART_URL}</fanart>
-            </movie>
-            EOF
+            FANART_URL="https://image.tmdb.org/t/p/w500$FANART"              # MOVIE NFO
+            printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n' > "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <title>%s</title>\n' "$NAME" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <originaltitle>%s</originaltitle>\n' "$NAME" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <year>%s</year>\n' "$YEAR" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <premiered>%s</premiered>\n' "$DATE" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <plot>%s</plot>\n' "$PLOT" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <runtime>%s</runtime>\n' "$RUNTIME" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <uniqueid type="tmdb" default="true">%s</uniqueid>\n' "$MID" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <id>%s</id>\n' "$MID" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <thumb>%s</thumb>\n' "$POSTER_URL" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '  <fanart>%s</fanart>\n' "$FANART_URL" >> "$MD/${NAME} (${YEAR}).nfo"
+            printf '</movie>\n' >> "$MD/${NAME} (${YEAR}).nfo"
           done
 
       - name: Build STRM & NFO – TV Shows
