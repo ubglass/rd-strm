@@ -86,7 +86,6 @@ jobs:
               <fanart>${FANART_URL}</fanart>
             </movie>
             EOF
-
           done
 
       - name: Build STRM & NFO – TV Shows
@@ -175,7 +174,6 @@ jobs:
               <thumb>${EP_STILL_URL}</thumb>
             </episodedetails>
             EOF
-
           done
 
       - name: Cleanup Koofr
