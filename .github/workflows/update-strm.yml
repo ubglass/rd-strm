@@ -275,7 +275,7 @@ jobs:
             sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
           
             echo "[OK] Movie generated: $STRM_PATH + NFO: $NFO_PATH"
-done
+          done
 
       - name: Upload to Koofr
         run: |
