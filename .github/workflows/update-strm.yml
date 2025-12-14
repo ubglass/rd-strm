@@ -120,20 +120,17 @@ jobs:
             mkdir -p "$SHOW_DIR"
 
             # SHOW NFO (root)
-            if [ ! -f "$SHOW_DIR/tvshow.nfo" ]; then
-              cat > "$SHOW_DIR/tvshow.nfo" <<EOF
-              <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-              <tvshow>
-                <title>${SHOWNAME}</title>
-                <year>${YEAR}</year>
-                <premiered>${SPREM}</premiered>
-                <plot>${SPLOT}</plot>
-                <uniqueid type="tmdb" default="true">${SID}</uniqueid>
-                <id>${SID}</id>
-                <thumb>https://image.tmdb.org/t/p/w500${SPOST}</thumb>
-                <fanart>https://image.tmdb.org/t/p/w500${SFAN}</fanart>
-              </tvshow>
-              EOF
+            if [ ! -f "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo" ]; then
+              printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<tvshow>\n' > "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <title>%s</title>\n' "$SHOWNAME" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <year>%s</year>\n' "$YEAR" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <premiered>%s</premiered>\n' "$SPREM" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <plot>%s</plot>\n' "$SPLOT" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <uniqueid type="tmdb" default="true">%s</uniqueid>\n' "$SID" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <id>%s</id>\n' "$SID" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <thumb>https://image.tmdb.org/t/p/w500%s</thumb>\n' "$SPOST" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '  <fanart>https://image.tmdb.org/t/p/w500%s</fanart>\n' "$SFAN" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              printf '</tvshow>\n' >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
             fi
 
             # EPISODE DETAILS
@@ -155,20 +152,17 @@ jobs:
             echo "$LINK" > "$SEASON_DIR/${BASE}.strm"
 
             # EPISODE NFO
-            cat > "$SEASON_DIR/${BASE}.nfo" <<EOF
-            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-            <episodedetails>
-              <title>${EP_TITLE}</title>
-              <season>$((10#$S))</season>
-              <episode>$((10#$E))</episode>
-              <aired>${EP_DATE}</aired>
-              <plot>${EP_PLOT}</plot>
-              <runtime>${EP_RT}</runtime>
-              <uniqueid type="tmdb" default="true">${EP_ID}</uniqueid>
-              <id>${EP_ID}</id>
-              <thumb>${EP_STILL_URL}</thumb>
-            </episodedetails>
-            EOF
+            printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<episodedetails>\n' > "$SEASON_DIR/${BASE}.nfo"
+            printf '  <title>%s</title>\n' "$EP_TITLE" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <season>%s</season>\n' "$((10#$S))" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <episode>%s</episode>\n' "$((10#$E))" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <aired>%s</aired>\n' "$EP_DATE" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <plot>%s</plot>\n' "$EP_PLOT" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <runtime>%s</runtime>\n' "$EP_RT" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <uniqueid type="tmdb" default="true">%s</uniqueid>\n' "$EP_ID" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <id>%s</id>\n' "$EP_ID" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '  <thumb>%s</thumb>\n' "$EP_STILL_URL" >> "$SEASON_DIR/${BASE}.nfo"
+            printf '</episodedetails>\n' >> "$SEASON_DIR/${BASE}.nfo"
           done
 
       - name: Cleanup Koofr
