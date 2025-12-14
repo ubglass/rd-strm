@@ -219,14 +219,14 @@ jobs:
             NFO_FILE="$SD/S$(printf '%02d' "$S")E$(printf '%02d' "$E").nfo"
 
             printf "<episodedetails>
-  <title>%s</title>
-  <season>%d</season>
-  <episode>%d</episode>
-  <aired>%s</aired>
-  <plot>%s</plot>
-  <runtime>%s</runtime>
-  <uniqueid type=\"tmdb\">%s</uniqueid>
-</episodedetails>" \
+              <title>%s</title>
+              <season>%d</season>
+              <episode>%d</episode>
+              <aired>%s</aired>
+              <plot>%s</plot>
+              <runtime>%s</runtime>
+              <uniqueid type=\"tmdb\">%s</uniqueid>
+              </episodedetails>" \
             "$(escape "$ETITLE")" "$S" "$E" "$EAIR" "$(escape "$EPLOT")" "$ERUNTIME" "$EID" \
             > "$NFO_FILE"
 
