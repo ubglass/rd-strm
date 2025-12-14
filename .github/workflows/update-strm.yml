@@ -26,6 +26,12 @@ jobs:
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/downloads" > downloads.json
+            
+      - name: DEBUG — Show RAW downloads.json
+        run: |
+          echo "========== RAW downloads.json =========="
+          cat downloads.json || echo "(file missing)"
+          echo "========================================"
 
       - name: Build Kodi STRM Library
         run: |
