@@ -1,4 +1,4 @@
-name: RD STRM Builder (Remote Artwork)
+name: RD STRM Builder (Stable + Artwork URLs)
 
 on:
   workflow_dispatch:
@@ -11,9 +11,9 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install jq
+      - name: Install tools
         run: sudo apt-get install -y jq
 
       - name: Prepare workspace
@@ -22,189 +22,165 @@ jobs:
           mkdir -p site_root/Movies
           mkdir -p site_root/TV_Shows
 
-      - name: Fetch Real-Debrid downloads
-        id: rd
+      - name: Fetch RD downloads
         run: |
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/downloads" \
-            | jq '.' > rd.json
+            | jq "." > rd.json
 
-          echo "[INFO] RD downloads fetched"
-
-      - name: Build STRM & NFO – Movies
+      - name: Process items
         run: |
-          mkdir -p site_root/Movies
+          TMDB="${{ secrets.TMDB_API_KEY }}"
 
-          jq -c '.[]' rd.json | while read DL; do
-            FILENAME=$(echo "$DL" | jq -r '.filename')
-            LINK=$(echo "$DL" | jq -r '.download')
-            GEN=$(echo "$DL" | jq -r '.generated')
+          jq -c '.[]' rd.json | while read ITEM; do
+            FN=$(echo "$ITEM" | jq -r '.filename')
+            DL=$(echo "$ITEM" | jq -r '.download')
 
-            # Extract movie name + year
-            NAME=$(echo "$FILENAME" | sed -E 's/\.[^.]+$//' | sed -E 's/[0-9]{3,4}p.*//')
-            YEAR=$(echo "$FILENAME" | grep -oE '(19|20)[0-9]{2}' | head -1)
+            # Detect movie by year
+            YEAR=$(echo "$FN" | grep -oE '(19|20)[0-9]{2}' | head -1)
 
-            [ -z "$YEAR" ] && continue
-
-            # TMDB SEARCH
-            TRES=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=${{ secrets.TMDB_API_KEY }}&query=$(jq -rn --arg v "$NAME" '$v|@uri')&year=$YEAR")
-            MID=$(echo "$TRES" | jq -r '.results[0].id // empty')
-
-            [ -z "$MID" ] && continue
-
-            # TMDB DETAILS
-            MDET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=${{ secrets.TMDB_API_KEY }}")
-            PLOT=$(echo "$MDET" | jq -r '.overview // ""')
-            RUNTIME=$(echo "$MDET" | jq -r '.runtime // 0')
-            POSTER=$(echo "$MDET" | jq -r '.poster_path // empty')
-            FANART=$(echo "$MDET" | jq -r '.backdrop_path // empty')
-            DATE=$(echo "$MDET" | jq -r '.release_date // ""')
-
-            MD="site_root/Movies/${NAME} (${YEAR})"
-            mkdir -p "$MD"
-
-            # STRM file
-            echo "$LINK" > "$MD/${NAME} (${YEAR}).strm"
-
-            # REMOTE artwork URLs
-            POSTER_URL="https://image.tmdb.org/t/p/w500$POSTER"
-            FANART_URL="https://image.tmdb.org/t/p/w500$FANART"              # MOVIE NFO
-            printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n' > "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <title>%s</title>\n' "$NAME" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <originaltitle>%s</originaltitle>\n' "$NAME" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <year>%s</year>\n' "$YEAR" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <premiered>%s</premiered>\n' "$DATE" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <plot>%s</plot>\n' "$PLOT" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <runtime>%s</runtime>\n' "$RUNTIME" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <uniqueid type="tmdb" default="true">%s</uniqueid>\n' "$MID" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <id>%s</id>\n' "$MID" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <thumb>%s</thumb>\n' "$POSTER_URL" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '  <fanart>%s</fanart>\n' "$FANART_URL" >> "$MD/${NAME} (${YEAR}).nfo"
-            printf '</movie>\n' >> "$MD/${NAME} (${YEAR}).nfo"
-          done
-
-      - name: Build STRM & NFO – TV Shows
-        run: |
-          jq -c '.[]' rd.json | while read DL; do
-            FILENAME=$(echo "$DL" | jq -r '.filename')
-            LINK=$(echo "$DL" | jq -r '.download')
-
-            # Detect SXXEYY
-            if [[ "$FILENAME" =~ S([0-9]{2})E([0-9]{2}) ]]; then
+            # Detect SxxEyy
+            if [[ "$FN" =~ S([0-9]{2})E([0-9]{2}) ]]; then
               S=${BASH_REMATCH[1]}
               E=${BASH_REMATCH[2]}
             else
+              S=""
+              E=""
+            fi
+
+            ###############################################
+            # MOVIE PROCESSING
+            ###############################################
+            if [ -n "$YEAR" ] && [ -z "$S" ]; then
+              NAME=$(echo "$FN" | sed -E 's/\.[^.]+$//' | sed -E "s/$YEAR.*//" | sed 's/\.$//')
+
+              # TMDB search
+              Q=$(jq -rn --arg v "$NAME" '$v|@uri')
+              RES=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$Q&year=$YEAR")
+              MID=$(echo "$RES" | jq -r '.results[0].id // empty')
+
+              [ -z "$MID" ] && continue
+
+              # TMDB details
+              DET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
+
+              PLOT=$(echo "$DET" | jq -r '.overview // ""')
+              RUNTIME=$(echo "$DET" | jq -r '.runtime // 0')
+              DATE=$(echo "$DET" | jq -r '.release_date // ""')
+              POSTER=$(echo "$DET" | jq -r '.poster_path // ""')
+              FANART=$(echo "$DET" | jq -r '.backdrop_path // ""')
+
+              MD="site_root/Movies/${NAME} (${YEAR})"
+              mkdir -p "$MD"
+
+              STRM="$MD/${NAME} (${YEAR}).strm"
+              NFO="$MD/${NAME} (${YEAR}).nfo"
+
+              echo "$DL" > "$STRM"
+
+              # MOVIE NFO (printf only)
+              printf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" > "$NFO"
+              printf "<movie>\n" >> "$NFO"
+              printf "  <title>%s</title>\n" "$NAME" >> "$NFO"
+              printf "  <originaltitle>%s</originaltitle>\n" "$NAME" >> "$NFO"
+              printf "  <year>%s</year>\n" "$YEAR" >> "$NFO"
+              printf "  <premiered>%s</premiered>\n" "$DATE" >> "$NFO"
+              printf "  <plot>%s</plot>\n" "$(echo "$PLOT" | sed 's/&/&amp;/g')" >> "$NFO"
+              printf "  <runtime>%s</runtime>\n" "$RUNTIME" >> "$NFO"
+              printf "  <uniqueid type=\"tmdb\" default=\"true\">%s</uniqueid>\n" "$MID" >> "$NFO"
+              printf "  <id>%s</id>\n" "$MID" >> "$NFO"
+              printf "  <thumb>https://image.tmdb.org/t/p/w500%s</thumb>\n" "$POSTER" >> "$NFO"
+              printf "  <fanart>https://image.tmdb.org/t/p/w500%s</fanart>\n" "$FANART" >> "$NFO"
+              printf "</movie>\n" >> "$NFO"
+
               continue
             fi
 
-            # Extract show name + year
-            SHOWNAME=$(echo "$FILENAME" | sed -E 's/S[0-9]{2}E[0-9]{2}.*//; s/\.[^.]+$//')
-            YEAR=$(echo "$FILENAME" | grep -oE '(19|20)[0-9]{2}' | head -1)
+            ###############################################
+            # TV EPISODE PROCESSING
+            ###############################################
+            if [ -n "$S" ] && [ -n "$E" ]; then
+              # Extract show name
+              SHOWNAME=$(echo "$FN" | sed -E 's/S[0-9]{2}E[0-9]{2}.*//' | sed -E 's/\.[^.]+$//')
+              YEAR=$(echo "$FN" | grep -oE '(19|20)[0-9]{2}' | head -1)
 
-            [ -z "$YEAR" ] && continue
+              [ -z "$YEAR" ] && continue
 
-            # TMDB TV SEARCH
-            TRES=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=${{ secrets.TMDB_API_KEY }}&query=$(jq -rn --arg v "$SHOWNAME" '$v|@uri')&first_air_date_year=$YEAR")
-            SID=$(echo "$TRES" | jq -r '.results[0].id // empty')
+              Q=$(jq -rn --arg v "$SHOWNAME" '$v|@uri')
+              RES=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$Q&first_air_date_year=$YEAR")
+              TID=$(echo "$RES" | jq -r '.results[0].id // empty')
 
-            [ -z "$SID" ] && continue
+              [ -z "$TID" ] && continue
 
-            # TMDB SHOW DETAILS
-            SDET=$(curl -s "https://api.themoviedb.org/3/tv/$SID?api_key=${{ secrets.TMDB_API_KEY }}")
-            SPLOT=$(echo "$SDET" | jq -r '.overview // ""')
-            SPOST=$(echo "$SDET" | jq -r '.poster_path // empty')
-            SFAN=$(echo "$SDET" | jq -r '.backdrop_path // empty')
-            SPREM=$(echo "$SDET" | jq -r '.first_air_date // ""')
+              # Show details
+              SDET=$(curl -s "https://api.themoviedb.org/3/tv/$TID?api_key=$TMDB")
+              TPLOT=$(echo "$SDET" | jq -r '.overview // ""')
+              TPREM=$(echo "$SDET" | jq -r '.first_air_date // ""')
+              TPOSTER=$(echo "$SDET" | jq -r '.poster_path // ""')
+              TFANART=$(echo "$SDET" | jq -r '.backdrop_path // ""')
 
-            SHOW_DIR="site_root/TV_Shows/${SHOWNAME} (${YEAR})"
-            mkdir -p "$SHOW_DIR"
+              SHOWDIR="site_root/TV_Shows/${SHOWNAME} (${YEAR})"
+              mkdir -p "$SHOWDIR"
 
-            # SHOW NFO (root)
-            if [ ! -f "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo" ]; then
-              printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<tvshow>\n' > "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <title>%s</title>\n' "$SHOWNAME" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <year>%s</year>\n' "$YEAR" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <premiered>%s</premiered>\n' "$SPREM" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <plot>%s</plot>\n' "$SPLOT" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <uniqueid type="tmdb" default="true">%s</uniqueid>\n' "$SID" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <id>%s</id>\n' "$SID" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <thumb>https://image.tmdb.org/t/p/w500%s</thumb>\n' "$SPOST" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '  <fanart>https://image.tmdb.org/t/p/w500%s</fanart>\n' "$SFAN" >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
-              printf '</tvshow>\n' >> "$SHOW_DIR/${SHOWNAME} (${YEAR}).nfo"
+              # TVSHOW NFO
+              if [ ! -f "$SHOWDIR/tvshow.nfo" ]; then
+                NFO="$SHOWDIR/tvshow.nfo"
+                printf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" > "$NFO"
+                printf "<tvshow>\n" >> "$NFO"
+                printf "  <title>%s</title>\n" "$SHOWNAME" >> "$NFO"
+                printf "  <year>%s</year>\n" "$YEAR" >> "$NFO"
+                printf "  <premiered>%s</premiered>\n" "$TPREM" >> "$NFO"
+                printf "  <plot>%s</plot>\n" "$(echo "$TPLOT" | sed 's/&/&amp;/g')" >> "$NFO"
+                printf "  <uniqueid type=\"tmdb\" default=\"true\">%s</uniqueid>\n" "$TID" >> "$NFO"
+                printf "  <id>%s</id>\n" "$TID" >> "$NFO"
+                printf "  <thumb>https://image.tmdb.org/t/p/w500%s</thumb>\n" "$TPOSTER" >> "$NFO"
+                printf "  <fanart>https://image.tmdb.org/t/p/w500%s</fanart>\n" "$TFANART" >> "$NFO"
+                printf "</tvshow>\n" >> "$NFO"
+              fi
+
+              # EPISODE DETAILS
+              EDET=$(curl -s "https://api.themoviedb.org/3/tv/$TID/season/$((10#$S))/episode/$((10#$E))?api_key=$TMDB")
+
+              EP_TITLE=$(echo "$EDET" | jq -r '.name // ""')
+              EP_PLOT=$(echo "$EDET" | jq -r '.overview // ""')
+              EP_DATE=$(echo "$EDET" | jq -r '.air_date // ""')
+              EP_RT=$(echo "$EDET" | jq -r '.runtime // 0')
+              EP_ID=$(echo "$EDET" | jq -r '.id // ""')
+              EP_STILL=$(echo "$EDET" | jq -r '.still_path // ""')
+
+              SEASON_DIR="$SHOWDIR/Season $((10#$S))"
+              mkdir -p "$SEASON_DIR"
+
+              BASE="${SHOWNAME} (${YEAR}) - S$(printf '%02d' "$S")E$(printf '%02d' "$E")"
+
+              STRM="$SEASON_DIR/${BASE}.strm"
+              NFO="$SEASON_DIR/${BASE}.nfo"
+
+              echo "$DL" > "$STRM"
+
+              # EPISODE NFO
+              printf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" > "$NFO"
+              printf "<episodedetails>\n" >> "$NFO"
+              printf "  <title>%s</title>\n" "$EP_TITLE" >> "$NFO"
+              printf "  <season>%s</season>\n" "$S" >> "$NFO"
+              printf "  <episode>%s</episode>\n" "$E" >> "$NFO"
+              printf "  <aired>%s</aired>\n" "$EP_DATE" >> "$NFO"
+              printf "  <plot>%s</plot>\n" "$(echo "$EP_PLOT" | sed 's/&/&amp;/g')" >> "$NFO"
+              printf "  <runtime>%s</runtime>\n" "$EP_RT" >> "$NFO"
+              printf "  <uniqueid type=\"tmdb\" default=\"true\">%s</uniqueid>\n" "$EP_ID" >> "$NFO"
+              printf "  <id>%s</id>\n" "$EP_ID" >> "$NFO"
+              printf "  <thumb>https://image.tmdb.org/t/p/w500%s</thumb>\n" "$EP_STILL" >> "$NFO"
+              printf "</episodedetails>\n" >> "$NFO"
+
             fi
 
-            # EPISODE DETAILS
-            EDET=$(curl -s "https://api.themoviedb.org/3/tv/$SID/season/$((10#$S))/episode/$((10#$E))?api_key=${{ secrets.TMDB_API_KEY }}")
-            EP_TITLE=$(echo "$EDET" | jq -r '.name // ""')
-            EP_PLOT=$(echo "$EDET" | jq -r '.overview // ""')
-            EP_DATE=$(echo "$EDET" | jq -r '.air_date // ""')
-            EP_RT=$(echo "$EDET" | jq -r '.runtime // 0')
-            EP_ID=$(echo "$EDET" | jq -r '.id // empty')
-            EP_STILL=$(echo "$EDET" | jq -r '.still_path // empty')
-
-            EP_STILL_URL="https://image.tmdb.org/t/p/w500${EP_STILL}"
-
-            SEASON_DIR="$SHOW_DIR/Season $((10#$S))"
-            mkdir -p "$SEASON_DIR"
-
-            BASE="${SHOWNAME} (${YEAR}) - S${S}E${E}"
-
-            echo "$LINK" > "$SEASON_DIR/${BASE}.strm"
-
-            # EPISODE NFO
-            printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<episodedetails>\n' > "$SEASON_DIR/${BASE}.nfo"
-            printf '  <title>%s</title>\n' "$EP_TITLE" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <season>%s</season>\n' "$((10#$S))" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <episode>%s</episode>\n' "$((10#$E))" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <aired>%s</aired>\n' "$EP_DATE" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <plot>%s</plot>\n' "$EP_PLOT" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <runtime>%s</runtime>\n' "$EP_RT" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <uniqueid type="tmdb" default="true">%s</uniqueid>\n' "$EP_ID" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <id>%s</id>\n' "$EP_ID" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '  <thumb>%s</thumb>\n' "$EP_STILL_URL" >> "$SEASON_DIR/${BASE}.nfo"
-            printf '</episodedetails>\n' >> "$SEASON_DIR/${BASE}.nfo"
           done
 
-      - name: Cleanup Koofr
-        run: |
-          echo "Cleaning remote storage…"
-
-          # local file list
-          find site_root -type f | sed 's#site_root/##' > local.txt
-
-          # remote file list
-          curl -s -X PROPFIND \
-            -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-            "${{ secrets.KOFR_URL }}" \
-            | grep -oP '(?<=<d:href>).*?(?=</d:href>)' \
-            | sed 's/%20/ /g' \
-            | sed "s#${{ secrets.KOFR_URL }}##" > remote.txt
-
-          while read RF; do
-            [ -z "$RF" ] && continue
-            if ! grep -Fxq "$RF" local.txt; then
-              echo "Deleting stale file: $RF"
-              ENC=$(printf '%s' "$RF" | sed 's/ /%20/g')
-              curl -s -X DELETE -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-                "${{ secrets.KOFR_URL }}$ENC" >/dev/null
-            fi
-          done < remote.txt
-
-      - name: Upload new files to Koofr
+      - name: Upload to Koofr
         run: |
           find site_root -type f | while read FILE; do
             REL=$(echo "$FILE" | sed 's#site_root/##')
-            ENC_REL=$(printf '%s' "$REL" | sed 's/ /%20/g')
-            DEST="${{ secrets.KOFR_URL }}$ENC_REL"
-            
-            echo "Uploading $REL -> $DEST"
-            RESPONSE=$(curl -s -w "%{http_code}" -T "$FILE" -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" "$DEST")
-            HTTP_CODE="${RESPONSE: -3}"
-            
-            if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ Uploaded $REL (HTTP $HTTP_CODE)"
-            else
-              echo "❌ Failed $REL (HTTP $HTTP_CODE)"
-              echo "Response: ${RESPONSE%???}"
-            fi
+            DEST="${{ secrets.KOFR_URL }}$(printf '%s' "$REL" | sed 's/ /%20/g')"
+            echo "Uploading: $REL"
+            curl -s -T "$FILE" -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" "$DEST"
           done
