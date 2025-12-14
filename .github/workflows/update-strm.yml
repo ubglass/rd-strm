@@ -55,17 +55,18 @@ jobs:
 
           # FIX: Use exact filename match only, DO NOT sort by generated timestamp
           get_direct_cdn() {
-            FILE="$1"
-            # Extract SxxExx tag from the basename
-            TAG=$(echo "$FILE" | grep -oEi 'S[0-9]{2}E[0-9]{2}')
-
-            # Find downloads that contain the same SxxExx pattern in their filename
-            jq -r --arg TAG "$TAG" '
-              .[]
-              | select(.streamable == 1)
-              | select(.filename | test($TAG; "i"))
-              | .download
-            ' downloads.json | head -n 1
+            TORRENT_ID="$1"
+            FILE="$2"
+            
+            # Query RD API for the *current torrent's* available links
+            curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
+              "https://api.real-debrid.com/rest/1.0/torrents/info/$TORRENT_ID" \
+              | jq -r --arg FILE "$FILE" '
+                .links_available
+                | .[] 
+                | select(.filename == $FILE)
+                | .download
+              ' | head -n 1
           }
 
           jq -c '.[]?' torrents.json | while read TOR; do
