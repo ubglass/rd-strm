@@ -71,19 +71,20 @@ jobs:
             FANART_URL="https://image.tmdb.org/t/p/w500$FANART"
 
             # MOVIE NFO
-            cat > "$MD/${NAME} (${YEAR}).nfo" <<-'EOF'
+            # MOVIE NFO
+            cat > "$MD/${NAME} (${YEAR}).nfo" <<EOF
             <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
             <movie>
-              <title>${NAME}</title>
-              <originaltitle>${NAME}</originaltitle>
-              <year>${YEAR}</year>
-              <premiered>${DATE}</premiered>
-              <plot>${PLOT}</plot>
-              <runtime>${RUNTIME}</runtime>
-              <uniqueid type="tmdb" default="true">${MID}</uniqueid>
-              <id>${MID}</id>
-              <thumb>${POSTER_URL}</thumb>
-              <fanart>${FANART_URL}</fanart>
+            <title>${NAME}</title>
+            <originaltitle>${NAME}</originaltitle>
+            <year>${YEAR}</year>
+            <premiered>${DATE}</premiered>
+            <plot>${PLOT}</plot>
+            <runtime>${RUNTIME}</runtime>
+            <uniqueid type="tmdb" default="true">${MID}</uniqueid>
+            <id>${MID}</id>
+            <thumb>${POSTER_URL}</thumb>
+            <fanart>${FANART_URL}</fanart>
             </movie>
             EOF
           done
