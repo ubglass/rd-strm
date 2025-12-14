@@ -89,7 +89,7 @@ jobs:
 
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
 
-              DIRECT=$(get_direct_cdn "$BASENAME")
+              DIRECT=$(get_direct_cdn "$ID" "$BASENAME")
 
               if [ -z "$DIRECT" ] || [ "$DIRECT" = "null" ]; then
                 LINK=$(jq -r ".links[$i]?" detail.json)
