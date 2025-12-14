@@ -53,10 +53,11 @@ jobs:
             echo "$1" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//'
           }
 
+          # FIX: Use exact filename match only, DO NOT sort by generated timestamp
           get_direct_cdn() {
             FILE="$1"
-            jq -c ".[] | select(.filename == \"$FILE\" and .streamable == 1)" downloads.json \
-              | jq -s "sort_by(.generated) | last | .download"
+            jq -r ".[] | select(.filename == \"$FILE\" and .streamable == 1) | .download" downloads.json \
+              | head -n 1
           }
 
           jq -c '.[]?' torrents.json | while read TOR; do
