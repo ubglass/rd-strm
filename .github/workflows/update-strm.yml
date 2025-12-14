@@ -72,20 +72,20 @@ jobs:
 
             # MOVIE NFO
             cat > "$MD/${NAME} (${YEAR}).nfo" <<EOF
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<movie>
-  <title>${NAME}</title>
-  <originaltitle>${NAME}</originaltitle>
-  <year>${YEAR}</year>
-  <premiered>${DATE}</premiered>
-  <plot>${PLOT}</plot>
-  <runtime>${RUNTIME}</runtime>
-  <uniqueid type="tmdb" default="true">${MID}</uniqueid>
-  <id>${MID}</id>
-  <thumb>${POSTER_URL}</thumb>
-  <fanart>${FANART_URL}</fanart>
-</movie>
-EOF
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <movie>
+              <title>${NAME}</title>
+              <originaltitle>${NAME}</originaltitle>
+              <year>${YEAR}</year>
+              <premiered>${DATE}</premiered>
+              <plot>${PLOT}</plot>
+              <runtime>${RUNTIME}</runtime>
+              <uniqueid type="tmdb" default="true">${MID}</uniqueid>
+              <id>${MID}</id>
+              <thumb>${POSTER_URL}</thumb>
+              <fanart>${FANART_URL}</fanart>
+            </movie>
+            EOF
 
           done
 
@@ -128,18 +128,18 @@ EOF
             # SHOW NFO (root)
             if [ ! -f "$SHOW_DIR/tvshow.nfo" ]; then
               cat > "$SHOW_DIR/tvshow.nfo" <<EOF
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<tvshow>
-  <title>${SHOWNAME}</title>
-  <year>${YEAR}</year>
-  <premiered>${SPREM}</premiered>
-  <plot>${SPLOT}</plot>
-  <uniqueid type="tmdb" default="true">${SID}</uniqueid>
-  <id>${SID}</id>
-  <thumb>https://image.tmdb.org/t/p/w500${SPOST}</thumb>
-  <fanart>https://image.tmdb.org/t/p/w500${SFAN}</fanart>
-</tvshow>
-EOF
+              <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+              <tvshow>
+                <title>${SHOWNAME}</title>
+                <year>${YEAR}</year>
+                <premiered>${SPREM}</premiered>
+                <plot>${SPLOT}</plot>
+                <uniqueid type="tmdb" default="true">${SID}</uniqueid>
+                <id>${SID}</id>
+                <thumb>https://image.tmdb.org/t/p/w500${SPOST}</thumb>
+                <fanart>https://image.tmdb.org/t/p/w500${SFAN}</fanart>
+              </tvshow>
+              EOF
             fi
 
             # EPISODE DETAILS
@@ -162,19 +162,19 @@ EOF
 
             # EPISODE NFO
             cat > "$SEASON_DIR/${BASE}.nfo" <<EOF
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<episodedetails>
-  <title>${EP_TITLE}</title>
-  <season>$((10#$S))</season>
-  <episode>$((10#$E))</episode>
-  <aired>${EP_DATE}</aired>
-  <plot>${EP_PLOT}</plot>
-  <runtime>${EP_RT}</runtime>
-  <uniqueid type="tmdb" default="true">${EP_ID}</uniqueid>
-  <id>${EP_ID}</id>
-  <thumb>${EP_STILL_URL}</thumb>
-</episodedetails>
-EOF
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <episodedetails>
+              <title>${EP_TITLE}</title>
+              <season>$((10#$S))</season>
+              <episode>$((10#$E))</episode>
+              <aired>${EP_DATE}</aired>
+              <plot>${EP_PLOT}</plot>
+              <runtime>${EP_RT}</runtime>
+              <uniqueid type="tmdb" default="true">${EP_ID}</uniqueid>
+              <id>${EP_ID}</id>
+              <thumb>${EP_STILL_URL}</thumb>
+            </episodedetails>
+            EOF
 
           done
 
