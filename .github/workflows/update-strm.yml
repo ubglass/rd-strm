@@ -43,8 +43,7 @@ jobs:
           escape() { echo "$1" | sed 's/%/%%/g'; }
           safe() { echo "$1" | sed 's#[^-_.a-zA-Z0-9 ()]#_#g'; }
 
-          DLIST=$(cat downloads.json)
-          echo "$DLIST" | jq -c '.[]?' | while read -r DL; do
+          jq -c 'if type=="array" then .[] else . end' downloads.json | while read -r DL; do
             {
               FILE=$(echo "$DL" | jq -r '.filename // ""')
               GEN=$(echo "$DL" | jq -r '.generated // ""')
