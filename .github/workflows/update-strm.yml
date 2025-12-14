@@ -85,7 +85,7 @@ jobs:
 
               FILE=$(jq -r ".files[$i].path" detail.json)
               BASENAME=$(basename "$FILE")
-              EXT="${BASENAME##*.}"
+              EXT=$(echo "${BASENAME##*.}" | sed 's/?.*//')
 
               [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && continue
 
