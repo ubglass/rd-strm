@@ -137,6 +137,12 @@ jobs:
               EP_MAP[$KEY]="$LINK"
               EP_META[$KEY]="$TID|$TNAME|$TYEAR|$S|$E|$TS"
 
+              # Store show-level metadata (only once per show)
+              SHOWKEY="show_${TID}"
+              if [ -z "${SHOW_META[$SHOWKEY]}" ]; then
+                SHOW_META[$SHOWKEY]="$TID|$TNAME|$TYEAR"
+                echo "[OK] Registered TV Show: $TNAME ($TYEAR)"
+              fi
               continue
             fi
 
