@@ -353,23 +353,27 @@ jobs:
             echo "[OK] Movie generated: $STRM_PATH + NFO: $NFO_PATH"
           done
 
-      - name: Upload to Koofr
-        run: |
-          echo "== UPLOAD TO KOOFR =="
-          cd site_root
-
-          encode() { echo "$1" | sed 's/ /%20/g'; }
-
-          find . -type d | while read D; do
-            ENC=$(encode "${D#./}")
-            curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-              -X MKCOL "${{ secrets.KOFR_URL }}$ENC/" || true
-          done
-
-          find . -type f | while read F; do
-            ENC=$(encode "${F#./}")
-            curl -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-              -T "$F" "${{ secrets.KOFR_URL }}$ENC" || true
-          done
-
-          echo "== COMPLETE =="
+            - name: Upload to Koofr
+            run: |
+              echo "== UPLOAD TO KOOFR =="
+              cd site_root
+    
+              encode() { echo "$1" | sed 's/ /%20/g'; }
+    
+              # Directories
+              find . -type d | while read D; do
+                ENC=$(encode "${D#./}")
+                echo "[KOFR] MKCOL $ENC/"
+                timeout 30 curl -s -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
+                  -X MKCOL "${{ secrets.KOFR_URL }}$ENC/" || echo "[WARN] MKCOL failed for $ENC"
+              done
+    
+              # Files
+              find . -type f | while read F; do
+                ENC=$(encode "${F#./}")
+                echo "[KOFR] PUT $ENC"
+                timeout 60 curl -s -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
+                  -T "$F" "${{ secrets.KOFR_URL }}$ENC" || echo "[WARN] PUT failed for $ENC"
+              done
+    
+              echo "== COMPLETE =="
