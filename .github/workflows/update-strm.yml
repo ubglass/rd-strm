@@ -27,20 +27,20 @@ jobs:
           curl -s -H "Authorization: Bearer ${{ secrets.RDTOKEN }}" \
             "https://api.real-debrid.com/rest/1.0/downloads" \
             > downloads.json
-
           echo "[DEBUG] RD JSON:"
-          sed 's/^/  /' downloads.json
+          sed 's/^/ /' downloads.json
 
       - name: Build STRM Library
         run: |
           set +e
+
           echo "== BUILDING LIBRARY =="
 
           TMDB="${{ secrets.TMDB_API_KEY }}"
 
           urlencode() { jq -nr --arg v "$1" '$v|@uri'; }
-          escape() { echo "$1" | sed 's/%/%%/g'; }
-          safe() { echo "$1" | sed 's#[^-_.a-zA-Z0-9 ()]#_#g'; }
+          escape()   { echo "$1" | sed 's/%/%%/g'; }
+          safe()     { echo "$1" | sed 's#[^-_.a-zA-Z0-9 ()]#_#g'; }
 
           # Correct timestamp cutoff
           CUTOFF=$(date -d "15 days ago" +%s)
@@ -50,14 +50,15 @@ jobs:
           declare -A EP_META
           declare -A MOV_MAP
           declare -A MOV_META
+          declare -A SHOW_META
 
           echo "== START PARSING DOWNLOADS =="
 
-          # *** CRITICAL FIX: no subshell, arrays preserved ***
+          # no subshell, arrays preserved
           while read -r DL; do
             echo ""
             echo "---------------- NEW ENTRY ----------------"
-            echo "$DL" | sed 's/^/   /'
+            echo "$DL" | sed 's/^/ /'
 
             FILE=$(echo "$DL" | jq -r '.filename // ""')
             LINK=$(echo "$DL" | jq -r '.download // ""')
@@ -69,7 +70,7 @@ jobs:
             echo "[DEBUG] STREAMABLE=$STREAM"
             echo "[DEBUG] GENERATED=$GEN"
 
-            # Robust timestamp parsing
+            # timestamp
             TS=$(echo "$GEN" | sed 's/\..*Z//; s/T/ /' | xargs -I{} date -d "{}" +%s 2>/dev/null || echo 0)
             echo "[DEBUG] TS=$TS"
 
@@ -113,7 +114,6 @@ jobs:
               fi
 
               ENC=$(urlencode "$SEARCH_TITLE")
-
               echo "[DEBUG] TMDB QUERY='$SEARCH_TITLE' Year='$YEAR'"
 
               if [ -n "$YEAR" ]; then
@@ -123,7 +123,7 @@ jobs:
               fi
 
               echo "[DEBUG] TMDB TV RESPONSE:"
-              echo "$SEARCH" | sed 's/^/   /'
+              echo "$SEARCH" | sed 's/^/ /'
 
               TID=$(echo "$SEARCH" | jq -r '.results[0].id // empty')
               [ -z "$TID" ] && echo "[SKIP] No TMDB match." && continue
@@ -141,8 +141,16 @@ jobs:
               SHOWKEY="show_${TID}"
               if [ -z "${SHOW_META[$SHOWKEY]}" ]; then
                 SHOW_META[$SHOWKEY]="$TID|$TNAME|$TYEAR"
-                echo "[OK] Registered TV Show: $TNAME ($TYEAR)"
+                echo "[OK] Registered TV Show: $TNAME ($TYEAR) as key '$SHOWKEY'"
+              else
+                echo "[DEBUG] TV Show already registered for key '$SHOWKEY': ${SHOW_META[$SHOWKEY]}"
               fi
+
+              echo "[DEBUG] Current SHOW_META keys after this episode:"
+              for K in "${!SHOW_META[@]}"; do
+                echo "  SHOW_META[$K] = ${SHOW_META[$K]}"
+              done
+
               continue
             fi
 
@@ -178,7 +186,7 @@ jobs:
             fi
 
             echo "[DEBUG] TMDB MOVIE RESPONSE:"
-            echo "$SEARCH" | sed 's/^/   /'
+            echo "$SEARCH" | sed 's/^/ /'
 
             MID=$(echo "$SEARCH" | jq -r '.results[0].id // empty')
             [ -z "$MID" ] && echo "[SKIP] No movie match." && continue
@@ -191,7 +199,6 @@ jobs:
             KEY="movie_${MID}"
             MOV_MAP[$KEY]="$LINK"
             MOV_META[$KEY]="$MID|$MNAME|$MYEAR|$TS"
-
           done < <(jq -c 'if type=="array" then .[] else . end' downloads.json)
 
           echo ""
@@ -203,95 +210,96 @@ jobs:
           ########################################################
           # BUILD TV SHOW NFO (SHOW LEVEL ONLY)
           ########################################################
-          
           echo "== BUILDING TV SHOW NFO =="
-          
+
           SHOW_TEMPLATE="templates/tvshow_template.nfo"
-          
+
+          echo "[DEBUG] SHOW_META size: ${#SHOW_META[@]}"
+          echo "[DEBUG] SHOW_META content before building:"
+          for K in "${!SHOW_META[@]}"; do
+            echo "  SHOW_META[$K] = ${SHOW_META[$K]}"
+          done
+
           for SHOWKEY in "${!SHOW_META[@]}"; do
             META="${SHOW_META[$SHOWKEY]}"
+            echo "[DEBUG] Processing SHOWKEY='$SHOWKEY' META='$META'"
+
             IFS='|' read SID SNAME SYEAR <<< "$META"
-          
+            echo "[DEBUG] Parsed SID='$SID' SNAME='$SNAME' SYEAR='$SYEAR'"
+
             SAFE_SHOW=$(safe "$SNAME")
             SHOW_FOLDER="${SAFE_SHOW} (${SYEAR})"
             SDIR="site_root/TV_Shows/$SHOW_FOLDER"
+            echo "[DEBUG] SAFE_SHOW='$SAFE_SHOW' SHOW_FOLDER='$SHOW_FOLDER' SDIR='$SDIR'"
+
             mkdir -p "$SDIR"
-          
-            echo "[DEBUG] Creating show folder: $SDIR"
-          
-            # Fetch TMDB show metadata
+            echo "[DEBUG] Created/ensured folder: $SDIR"
+
             DETAIL=$(curl -s "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
-          
+            echo "[DEBUG] TMDB SHOW DETAIL for SID=$SID (first 200 chars):"
+            echo "$DETAIL" | head -c 200; echo
+
             PLOT=$(echo "$DETAIL" | jq -r '.overview // ""')
             POSTER=$(echo "$DETAIL" | jq -r '.poster_path // ""')
             FANART=$(echo "$DETAIL" | jq -r '.backdrop_path // ""')
-          
+
             [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
             [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
-          
-            # Create NFO filename matching folder name:
+
+            echo "[DEBUG] POSTER='$POSTER' POSTER_URL='$POSTER_URL'"
+            echo "[DEBUG] FANART='$FANART' FANART_URL='$FANART_URL'"
+
             NFO_PATH="$SDIR/tvshow.nfo"
-          
-            # Copy and replace variables
-            cp "$SHOW_TEMPLATE" "$NFO_PATH"
-          
+            echo "[DEBUG] NFO_PATH to create: $NFO_PATH"
+
+            if [ ! -f "$SHOW_TEMPLATE" ]; then
+              echo "[ERROR] SHOW_TEMPLATE not found at: $SHOW_TEMPLATE"
+            fi
+
+            cp "$SHOW_TEMPLATE" "$NFO_PATH" || echo "[ERROR] Failed to copy template to $NFO_PATH"
+
             sed -i "s|{TITLE}|$(escape "$SNAME")|g" "$NFO_PATH"
             sed -i "s|{YEAR}|$SYEAR|g" "$NFO_PATH"
             sed -i "s|{TMDB_ID}|$SID|g" "$NFO_PATH"
             sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO_PATH"
             sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO_PATH"
             sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
-          
+
             echo "[OK] Created show NFO: $NFO_PATH"
           done
 
           ########################################################
-          # BUILD TV EPISODE STRM + NFO (MATCHES STRM NAME)
+          # BUILD TV EPISODE STRM + NFO
           ########################################################
-          
           echo "== BUILDING TV EPISODES =="
-          
+
           EP_TEMPLATE="templates/tvepisode_template.nfo"
-          
+
           for EKEY in "${!EP_MAP[@]}"; do
             META="${EP_META[$EKEY]}"
             IFS='|' read SID SNAME SYEAR SEASON EPISODE TS <<< "$META"
-          
+
             SAFE_SHOW=$(safe "$SNAME")
             SHOW_FOLDER="${SAFE_SHOW} (${SYEAR})"
             SEASON_FOLDER=$(printf "Season %02d" "$SEASON")
-          
             EDIR="site_root/TV_Shows/$SHOW_FOLDER/$SEASON_FOLDER"
             mkdir -p "$EDIR"
-          
-            ########################################################
-            # STRM filename (must match NFO filename)
-            ########################################################
+
             BASE="${SAFE_SHOW} S$(printf '%02d' "$SEASON")E$(printf '%02d' "$EPISODE")"
             STRM_PATH="$EDIR/$BASE.strm"
-          
             echo "${EP_MAP[$EKEY]}" > "$STRM_PATH"
             echo "[OK] Episode STRM created: $STRM_PATH"
-          
-            ########################################################
-            # Fetch TMDB Episode Metadata
-            ########################################################
+
             EPDATA=$(curl -s "https://api.themoviedb.org/3/tv/$SID/season/$SEASON/episode/$EPISODE?api_key=$TMDB")
-          
             ETITLE=$(echo "$EPDATA" | jq -r '.name // ""')
             EPLOT=$(echo "$EPDATA" | jq -r '.overview // ""')
             AIRDATE=$(echo "$EPDATA" | jq -r '.air_date // ""')
             STILL=$(echo "$EPDATA" | jq -r '.still_path // ""')
             EPID=$(echo "$EPDATA" | jq -r '.id // ""')
-          
             [ "$STILL" != "" ] && THUMB_URL="https://image.tmdb.org/t/p/original${STILL}" || THUMB_URL=""
-          
-            ########################################################
-            # Episode NFO (filename must match STRM)
-            ########################################################
+
             NFO_PATH="$EDIR/$BASE.nfo"
             cp "$EP_TEMPLATE" "$NFO_PATH"
-          
             sed -i "s|{TITLE}|$(escape "$ETITLE")|g" "$NFO_PATH"
             sed -i "s|{SEASON}|$SEASON|g" "$NFO_PATH"
             sed -i "s|{EPISODE}|$EPISODE|g" "$NFO_PATH"
@@ -299,56 +307,47 @@ jobs:
             sed -i "s|{PLOT}|$(escape "$EPLOT")|g" "$NFO_PATH"
             sed -i "s|{THUMB_URL}|$THUMB_URL|g" "$NFO_PATH"
             sed -i "s|{TMDB_EPISODE_ID}|$EPID|g" "$NFO_PATH"
-          
+
             echo "[OK] Episode NFO created: $NFO_PATH"
-          
           done
 
-
           ########################################################
-          # BUILD MOVIE OUTPUT (WITH NFO TEMPLATE)
+          # BUILD MOVIE OUTPUT
           ########################################################
           echo "== BUILDING MOVIE OUTPUT =="
-          
+
           TEMPLATE="templates/movie_template.nfo"
-          
+
           for KEY in "${!MOV_MAP[@]}"; do
             META="${MOV_META[$KEY]}"
             IFS='|' read MID MNAME MYEAR TS <<< "$META"
-          
+
             MV=$(safe "$MNAME")
             MD="site_root/Movies/${MV} (${MYEAR})"
             mkdir -p "$MD"
-          
+
             echo "[DEBUG] Creating movie folder: $MD"
-          
-            # Create STRM file
+
             STRM_PATH="$MD/${MV} (${MYEAR}).strm"
             echo "${MOV_MAP[$KEY]}" > "$STRM_PATH"
-          
-            # Fetch TMDB metadata
+
             DET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
             PLOT=$(echo "$DET" | jq -r '.overview // ""')
             POSTER=$(echo "$DET" | jq -r '.poster_path // ""')
             FANART=$(echo "$DET" | jq -r '.backdrop_path // ""')
-          
-            # Build final URLs or empty
+
             [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
             [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
-          
-            # NFO file name must match STRM name
+
             NFO_PATH="$MD/${MV} (${MYEAR}).nfo"
-          
-            # Load template and replace variables
             cp "$TEMPLATE" "$NFO_PATH"
-          
             sed -i "s|{TITLE}|$(escape "$MNAME")|g" "$NFO_PATH"
             sed -i "s|{YEAR}|$MYEAR|g" "$NFO_PATH"
             sed -i "s|{TMDB_ID}|$MID|g" "$NFO_PATH"
             sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO_PATH"
             sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO_PATH"
             sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
-          
+
             echo "[OK] Movie generated: $STRM_PATH + NFO: $NFO_PATH"
           done
 
