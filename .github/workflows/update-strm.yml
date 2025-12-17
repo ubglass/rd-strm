@@ -230,7 +230,7 @@ jobs:
             [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
           
             # Create NFO filename matching folder name:
-            NFO_PATH="$SDIR/${SHOW_FOLDER}.nfo"
+            NFO_PATH="$SDIR/tvshow.nfo"
           
             # Copy and replace variables
             cp "$SHOW_TEMPLATE" "$NFO_PATH"
