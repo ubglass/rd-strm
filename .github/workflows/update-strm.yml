@@ -160,47 +160,95 @@ jobs:
             # MOVIE DETECTION
             ########################################################
             echo "[DEBUG] Checking movie…"
-
+  
             RAW=$(echo "$NAME" |
               sed -E 's/[_\.]/ /g' |
               sed 's/  */ /g; s/ $//')
-
+  
             echo "[DEBUG] RAW MOVIE TITLE='$RAW'"
-
-            YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
+  
+            YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])' | head -1)
             echo "[DEBUG] YEAR=$YEAR"
-
+  
             if [ -n "$YEAR" ]; then
               CLEAN=$(echo "$RAW" | sed -E "s/$YEAR.*//")
             else
               CLEAN="$RAW"
             fi
-
+  
             CLEAN=$(echo "$CLEAN" | sed 's/  */ /g; s/ $//')
+            echo "[DEBUG] BASE CLEAN TITLE='$CLEAN'"
+  
+            # Version with possible language tags stripped ONLY at the end
+            STRIPPED=$(echo "$CLEAN" | sed -E '
+              s/[[:space:]]+(- )?(Hindi|Hin|HIN)$/ /Ig;
+              s/[[:space:]]+(- )?(English|Eng)$/ /Ig;
+              s/[[:space:]]+(- )?(Spanish|Spa|ESP)$/ /Ig;
+              s/[[:space:]]+(- )?(Tamil|Tam|TAM)$/ /Ig;
+              s/[[:space:]]+(- )?(Malayalam|Mal)$/ /Ig;
+              s/[[:space:]]+(- )?(Telugu|Tel|TEL)$/ /Ig;
+              s/[[:space:]]+(- )?(Kannada|Kan)$/ /Ig;
+              s/[[:space:]]+(- )?(Dual Audio|Multi Audio|Dubbed)$/ /Ig;
+              s/[[:space:]]+(- )?(Atmos|ATMOS)$/ /Ig;
+            ')
+            STRIPPED=$(echo "$STRIPPED" | sed 's/  */ /g; s/ $//')
+  
+            echo "[DEBUG] STRIPPED TITLE='$STRIPPED'"
+  
+            # First try with original CLEAN
             ENC=$(urlencode "$CLEAN")
-
-            echo "[DEBUG] TMDB MOVIE QUERY='$CLEAN' YEAR='$YEAR'"
-
+            echo "[DEBUG] TMDB MOVIE QUERY (primary)='$CLEAN' YEAR='$YEAR'"
+  
             if [ -n "$YEAR" ]; then
               SEARCH=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC&year=$YEAR")
             else
               SEARCH=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC")
             fi
-
-            echo "[DEBUG] TMDB MOVIE RESPONSE:"
+  
+            echo "[DEBUG] TMDB MOVIE RESPONSE (primary):"
             echo "$SEARCH" | sed 's/^/ /'
-
+  
             MID=$(echo "$SEARCH" | jq -r '.results[0].id // empty')
-            [ -z "$MID" ] && echo "[SKIP] No movie match." && continue
-
+  
+            # Fallback 1: try STRIPPED
+            if [ -z "$MID" ] && [ "$STRIPPED" != "$CLEAN" ]; then
+              echo "[DEBUG] No match with full title, retrying with STRIPPED…"
+              ENC2=$(urlencode "$STRIPPED")
+              if [ -n "$YEAR" ]; then
+                SEARCH=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC2&year=$YEAR")
+              else
+                SEARCH=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC2")
+              fi
+              echo "[DEBUG] TMDB MOVIE RESPONSE (stripped):"
+              echo "$SEARCH" | sed 's/^/ /'
+              MID=$(echo "$SEARCH" | jq -r '.results[0].id // empty')
+            fi
+  
+            # Fallback 2: drop year filter
+            if [ -z "$MID" ] && [ -n "$YEAR" ]; then
+              echo "[DEBUG] No result with year, retrying without year filter…"
+              if [ "$STRIPPED" != "$CLEAN" ]; then
+                ENC3=$(urlencode "$STRIPPED")
+              else
+                ENC3=$(urlencode "$CLEAN")
+              fi
+              SEARCH=$(curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC3")
+              echo "[DEBUG] TMDB MOVIE RESPONSE (no-year fallback):"
+              echo "$SEARCH" | sed 's/^/ /'
+              MID=$(echo "$SEARCH" | jq -r '.results[0].id // empty')
+            fi
+  
+            [ -z "$MID" ] && echo "[SKIP] No movie match even after fallbacks." && continue
+  
             MNAME=$(echo "$SEARCH" | jq -r '.results[0].title')
             MYEAR=$(echo "$SEARCH" | jq -r '.results[0].release_date' | cut -c1-4)
-
+  
             echo "[OK] MOVIE MATCH: $MNAME ($MYEAR)"
-
+  
             KEY="movie_${MID}"
             MOV_MAP[$KEY]="$LINK"
             MOV_META[$KEY]="$MID|$MNAME|$MYEAR|$TS"
+
           done < <(jq -c 'if type=="array" then .[] else . end' downloads.json)
 
           echo ""
