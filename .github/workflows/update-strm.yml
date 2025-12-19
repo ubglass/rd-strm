@@ -92,54 +92,87 @@ jobs:
             ########################################################
             if [[ "$NAME" =~ [Ss][0-9]{1,2}[Ee][0-9]{1,2} ]]; then
               echo "[DEBUG] TV detection triggered."
-
+            
               S=$(echo "$NAME" | grep -oEi "S[0-9]{1,2}" | tr -d 'S')
               E=$(echo "$NAME" | grep -oEi "E[0-9]{1,2}" | tr -d 'E')
               S=$((10#$S)); E=$((10#$E))
-
+            
               echo "[DEBUG] Parsed S=$S E=$E"
-
+            
               RAW=$(echo "$NAME" |
                 sed -E 's/[_\.]/ /g' |
                 sed -E 's/[Ss][0-9]{1,2}[Ee][0-9]{1,2}.*//' |
                 sed 's/  */ /g; s/ $//')
-
+            
               echo "[DEBUG] RAW TV TITLE='$RAW'"
-
+            
               YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
               echo "[DEBUG] YEAR=$YEAR"
-
+            
               if [ -n "$YEAR" ]; then
-                SEARCH_TITLE=$(echo "$RAW" | sed -E "s/$YEAR//" | sed 's/  */ /g')
+                SEARCH_TITLE=$(echo "$RAW" | sed -E "s/$YEAR//" | sed 's/  */ /g; s/ $//')
               else
                 SEARCH_TITLE="$RAW"
               fi
-
+            
               ENC=$(urlencode "$SEARCH_TITLE")
               echo "[DEBUG] TMDB QUERY='$SEARCH_TITLE' Year='$YEAR'"
-
+            
+              # Primary search (with year if present)
               if [ -n "$YEAR" ]; then
                 SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC&first_air_date_year=$YEAR")
               else
                 SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC")
               fi
-
-              echo "[DEBUG] TMDB TV RESPONSE:"
+            
+              echo "[DEBUG] TMDB TV RESPONSE (primary):"
               echo "$SEARCH" | sed 's/^/ /'
-
-              TID=$(echo "$SEARCH" | jq -r '.results[0].id // empty')
-              [ -z "$TID" ] && echo "[SKIP] No TMDB match." && continue
-
-              TNAME=$(echo "$SEARCH" | jq -r '.results[0].name')
-              TYEAR=$(echo "$SEARCH" | jq -r '.results[0].first_air_date' | cut -c1-4)
-
+            
+              # If nothing when using year, retry without year filter
+              if [ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 ] && [ -n "$YEAR" ]; then
+                echo "[DEBUG] No TV result with year, retrying without year filter…"
+                SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC")
+                echo "[DEBUG] TMDB TV RESPONSE (no-year fallback):"
+                echo "$SEARCH" | sed 's/^/ /'
+              fi
+            
+              # Choose best show by popularity (non-adult first)[web:31][web:66]
+              TID=$(
+                echo "$SEARCH" |
+                jq -r '
+                  .results
+                  | if length == 0 then [] else . end
+                  | map(select(.adult != true))
+                  | sort_by(-.popularity)
+                  | .[0].id // empty
+                '
+              )
+            
+              if [ -z "$TID" ]; then
+                echo "[DEBUG] No TMDB TV id found for '$SEARCH_TITLE' (YEAR='$YEAR')"
+                echo "[SKIP] No TMDB match."
+                continue
+              fi
+            
+              TNAME=$(
+                echo "$SEARCH" |
+                jq -r --argjson tid "$TID" '
+                  .results | map(select(.id == $tid)) | .[0].name
+                '
+              )
+              TYEAR=$(
+                echo "$SEARCH" |
+                jq -r --argjson tid "$TID" '
+                  .results | map(select(.id == $tid)) | .[0].first_air_date
+                ' | cut -c1-4
+              )
+            
               echo "[OK] TV MATCH: $TNAME ($TYEAR)"
-
+            
               KEY="tv_${TID}_S${S}_E${E}"
               EP_MAP[$KEY]="$LINK"
               EP_META[$KEY]="$TID|$TNAME|$TYEAR|$S|$E|$TS"
-
-              # Store show-level metadata (only once per show)
+            
               SHOWKEY="show_${TID}"
               if [ -z "${SHOW_META[$SHOWKEY]}" ]; then
                 SHOW_META[$SHOWKEY]="$TID|$TNAME|$TYEAR"
@@ -147,14 +180,15 @@ jobs:
               else
                 echo "[DEBUG] TV Show already registered for key '$SHOWKEY': ${SHOW_META[$SHOWKEY]}"
               fi
-
+            
               echo "[DEBUG] Current SHOW_META keys after this episode:"
               for K in "${!SHOW_META[@]}"; do
                 echo "  SHOW_META[$K] = ${SHOW_META[$K]}"
               done
-
+            
               continue
             fi
+
 
             ########################################################
             # MOVIE DETECTION
