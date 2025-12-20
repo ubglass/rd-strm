@@ -339,107 +339,98 @@ jobs:
           echo "===================="
 
           ########################################################
+          ########################################################
           # BUILD TV SHOW NFO (SHOW LEVEL ONLY)
           ########################################################
           echo "== BUILDING TV SHOW NFO =="
-
-          SHOW_TEMPLATE="templates/tvshow_template.nfo"
-
           echo "[DEBUG] SHOW_META size: ${#SHOW_META[@]}"
-          echo "[DEBUG] SHOW_META content before building:"
-          for K in "${!SHOW_META[@]}"; do
-            echo "  SHOW_META[$K] = ${SHOW_META[$K]}"
-          done
-
+          
+          TV_ROOT="site_root/TV_Shows"
+          mkdir -p "$TV_ROOT"
+          
           for SHOWKEY in "${!SHOW_META[@]}"; do
-            META="${SHOW_META[$SHOWKEY]}"
-            echo "[DEBUG] Processing SHOWKEY='$SHOWKEY' META='$META'"
-
-            IFS='|' read SID SNAME SYEAR <<< "$META"
-            echo "[DEBUG] Parsed SID='$SID' SNAME='$SNAME' SYEAR='$SYEAR'"
-
-            SAFE_SHOW=$(safe "$SNAME")
-            SHOW_FOLDER="${SAFE_SHOW} (${SYEAR})"
-            SDIR="site_root/TV_Shows/$SHOW_FOLDER"
-            echo "[DEBUG] SAFE_SHOW='$SAFE_SHOW' SHOW_FOLDER='$SHOW_FOLDER' SDIR='$SDIR'"
-
-            mkdir -p "$SDIR"
-            echo "[DEBUG] Created/ensured folder: $SDIR"
-
-            DETAIL=$(curl -s "https://api.themoviedb.org/3/tv/$SID?api_key=$TMDB")
-            echo "[DEBUG] TMDB SHOW DETAIL for SID=$SID (first 200 chars):"
-            echo "$DETAIL" | head -c 200; echo
-
-            PLOT=$(echo "$DETAIL" | jq -r '.overview // ""')
-            POSTER=$(echo "$DETAIL" | jq -r '.poster_path // ""')
-            FANART=$(echo "$DETAIL" | jq -r '.backdrop_path // ""')
-
-            [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
-            [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
-
-            echo "[DEBUG] POSTER='$POSTER' POSTER_URL='$POSTER_URL'"
-            echo "[DEBUG] FANART='$FANART' FANART_URL='$FANART_URL'"
-
-            NFO_PATH="$SDIR/tvshow.nfo"
-            echo "[DEBUG] NFO_PATH to create: $NFO_PATH"
-
-            if [ ! -f "$SHOW_TEMPLATE" ]; then
-              echo "[ERROR] SHOW_TEMPLATE not found at: $SHOW_TEMPLATE"
-            fi
-
-            cp "$SHOW_TEMPLATE" "$NFO_PATH" || echo "[ERROR] Failed to copy template to $NFO_PATH"
-
-            sed -i "s|{TITLE}|$(escape "$SNAME")|g" "$NFO_PATH"
-            sed -i "s|{YEAR}|$SYEAR|g" "$NFO_PATH"
-            sed -i "s|{TMDB_ID}|$SID|g" "$NFO_PATH"
-            sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO_PATH"
-            sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO_PATH"
-            sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
-
-            echo "[OK] Created show NFO: $NFO_PATH"
+            # SHOW_META[show_<TID>] = "<TID>|<TNAME>|<TYEAR>"
+            IFS='|' read -r TID TNAME TYEAR <<< "${SHOW_META[$SHOWKEY]}"
+          
+            echo "[DEBUG] SHOW_META[$SHOWKEY] = ${SHOW_META[$SHOWKEY]}"
+            echo "[DEBUG] Building show-level NFO for $TNAME ($TYEAR), TID=$TID"
+          
+            SHOW_DIR="$TV_ROOT/${TNAME} (${TYEAR})"
+            mkdir -p "$SHOW_DIR"
+          
+            SHOW_NFO="$SHOW_DIR/tvshow.nfo"
+          
+            cat > "$SHOW_NFO" <<EOF
+          <tvshow>
+            <title>${TNAME}</title>
+            <year>${TYEAR}</year>
+            <tmdbid>${TID}</tmdbid>
+          </tvshow>
+          EOF
+          
+            echo "[OK] TV show NFO created: $SHOW_NFO"
           done
 
+          ########################################################
           ########################################################
           # BUILD TV EPISODE STRM + NFO
           ########################################################
           echo "== BUILDING TV EPISODES =="
-
-          EP_TEMPLATE="templates/tvepisode_template.nfo"
-
-          for EKEY in "${!EP_MAP[@]}"; do
-            META="${EP_META[$EKEY]}"
-            IFS='|' read SID SNAME SYEAR SEASON EPISODE TS <<< "$META"
-
-            SAFE_SHOW=$(safe "$SNAME")
-            SHOW_FOLDER="${SAFE_SHOW} (${SYEAR})"
-            SEASON_FOLDER=$(printf "Season %02d" "$SEASON")
-            EDIR="site_root/TV_Shows/$SHOW_FOLDER/$SEASON_FOLDER"
-            mkdir -p "$EDIR"
-
-            BASE="${SAFE_SHOW} S$(printf '%02d' "$SEASON")E$(printf '%02d' "$EPISODE")"
-            STRM_PATH="$EDIR/$BASE.strm"
-            echo "${EP_MAP[$EKEY]}" > "$STRM_PATH"
-            echo "[OK] Episode STRM created: $STRM_PATH"
-
-            EPDATA=$(curl -s "https://api.themoviedb.org/3/tv/$SID/season/$SEASON/episode/$EPISODE?api_key=$TMDB")
-            ETITLE=$(echo "$EPDATA" | jq -r '.name // ""')
-            EPLOT=$(echo "$EPDATA" | jq -r '.overview // ""')
-            AIRDATE=$(echo "$EPDATA" | jq -r '.air_date // ""')
-            STILL=$(echo "$EPDATA" | jq -r '.still_path // ""')
-            EPID=$(echo "$EPDATA" | jq -r '.id // ""')
-            [ "$STILL" != "" ] && THUMB_URL="https://image.tmdb.org/t/p/original${STILL}" || THUMB_URL=""
-
-            NFO_PATH="$EDIR/$BASE.nfo"
-            cp "$EP_TEMPLATE" "$NFO_PATH"
-            sed -i "s|{TITLE}|$(escape "$ETITLE")|g" "$NFO_PATH"
-            sed -i "s|{SEASON}|$SEASON|g" "$NFO_PATH"
-            sed -i "s|{EPISODE}|$EPISODE|g" "$NFO_PATH"
-            sed -i "s|{AIRDATE}|$AIRDATE|g" "$NFO_PATH"
-            sed -i "s|{PLOT}|$(escape "$EPLOT")|g" "$NFO_PATH"
-            sed -i "s|{THUMB_URL}|$THUMB_URL|g" "$NFO_PATH"
-            sed -i "s|{TMDB_EPISODE_ID}|$EPID|g" "$NFO_PATH"
-
-            echo "[OK] Episode NFO created: $NFO_PATH"
+          echo "[DEBUG] EP_MAP size: ${#EP_MAP[@]}"
+          
+          TV_ROOT="site_root/TV_Shows"
+          mkdir -p "$TV_ROOT"
+          
+          # Loop per show, then its episodes
+          for SHOWKEY in "${!SHOW_META[@]}"; do
+            IFS='|' read -r TID TNAME TYEAR <<< "${SHOW_META[$SHOWKEY]}"
+          
+            echo "[DEBUG] Processing show $TNAME ($TYEAR), TID=$TID"
+          
+            SHOW_DIR="$TV_ROOT/${TNAME} (${TYEAR})"
+            mkdir -p "$SHOW_DIR"
+          
+            # Iterate over all episodes, pick those belonging to this TID
+            for EPKEY in "${!EP_MAP[@]}"; do
+              # EPKEY format: tv_${TID}_S${S}_E${E}
+              if [[ "$EPKEY" != tv_"${TID}"_* ]]; then
+                continue
+              fi
+          
+              # EP_META[tv_<TID>_S<S>_E<E>] = "<TID>|<TNAME>|<TYEAR>|<S>|<E>|<TS>"
+              IFS='|' read -r ETID ETNAME ETYEAR ES EE ETS <<< "${EP_META[$EPKEY]}"
+          
+              SEASON_PAD=$(printf "%02d" "$ES")
+              EP_PAD=$(printf "%02d" "$EE")
+          
+              SEASON_DIR="$SHOW_DIR/Season $SEASON_PAD"
+              mkdir -p "$SEASON_DIR"
+          
+              EP_TITLE="${TNAME} S${SEASON_PAD}E${EP_PAD}"
+          
+              STRM_PATH="$SEASON_DIR/${EP_TITLE}.strm"
+              NFO_PATH="$SEASON_DIR/${EP_TITLE}.nfo"
+          
+              LINK="${EP_MAP[$EPKEY]}"
+          
+              echo "[DEBUG] Creating TV episode: $EP_TITLE"
+              echo "[DEBUG]  STRM: $STRM_PATH"
+              echo "[DEBUG]  NFO : $NFO_PATH"
+              echo "$LINK" > "$STRM_PATH"
+          
+              cat > "$NFO_PATH" <<EOF
+          <episodedetails>
+            <title>${EP_TITLE}</title>
+            <season>${ES}</season>
+            <episode>${EE}</episode>
+            <showtitle>${TNAME}</showtitle>
+            <year>${ETYEAR}</year>
+            <tmdbid>${ETID}</tmdbid>
+          </episodedetails>
+          EOF
+          
+              echo "[OK] TV episode generated: $EP_TITLE"
+            done
           done
 
           ########################################################
