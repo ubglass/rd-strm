@@ -93,12 +93,20 @@ jobs:
             if [[ "$NAME" =~ [Ss][0-9]{1,2}[Ee][0-9]{1,2} ]]; then
               echo "[DEBUG] TV detection triggered."
             
-              S=$(echo "$NAME" | grep -oEi "S[0-9]{1,2}" | tr -d 'S')
-              E=$(echo "$NAME" | grep -oEi "E[0-9]{1,2}" | tr -d 'E')
-              S=$((10#$S)); E=$((10#$E))
+              # Extract the SxxEyy chunk safely (e.g. S01E06)
+              SE_BLOCK=$(echo "$NAME" | grep -oEi "S[0-9]{1,2}E[0-9]{1,2}" | head -1)
+            
+              # Season = digits after S, before E
+              S=$(echo "$SE_BLOCK" | sed -E 's/^S([0-9]{1,2})E[0-9]{1,2}$/\1/I')
+              # Episode = digits after E
+              E=$(echo "$SE_BLOCK" | sed -E 's/^S[0-9]{1,2}E([0-9]{1,2})$/\1/I')
+            
+              S=$((10#$S))
+              E=$((10#$E))
             
               echo "[DEBUG] Parsed S=$S E=$E"
             
+              # Build raw show title by stripping everything from SxxEyy onwards
               RAW=$(echo "$NAME" |
                 sed -E 's/[_\.]/ /g' |
                 sed -E 's/[Ss][0-9]{1,2}[Ee][0-9]{1,2}.*//' |
@@ -106,6 +114,7 @@ jobs:
             
               echo "[DEBUG] RAW TV TITLE='$RAW'"
             
+              # Optional year in the title (rare for shows, but keep your logic)
               YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
               echo "[DEBUG] YEAR=$YEAR"
             
@@ -118,7 +127,7 @@ jobs:
               ENC=$(urlencode "$SEARCH_TITLE")
               echo "[DEBUG] TMDB QUERY='$SEARCH_TITLE' Year='$YEAR'"
             
-              # Primary search (with year if present)
+              # Primary search (with year filter if present)
               if [ -n "$YEAR" ]; then
                 SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC&first_air_date_year=$YEAR")
               else
@@ -128,7 +137,7 @@ jobs:
               echo "[DEBUG] TMDB TV RESPONSE (primary):"
               echo "$SEARCH" | sed 's/^/ /'
             
-              # If nothing when using year, retry without year filter
+              # If nothing when using year, retry without year
               if [ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 ] && [ -n "$YEAR" ]; then
                 echo "[DEBUG] No TV result with year, retrying without year filter…"
                 SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC")
@@ -136,7 +145,9 @@ jobs:
                 echo "$SEARCH" | sed 's/^/ /'
               fi
             
-              # Choose best show by popularity (non-adult first)[web:31][web:66]
+              # Choose best show:
+              # 1) Exclude adult entries
+              # 2) Sort by popularity descending[web:31][web:66]
               TID=$(
                 echo "$SEARCH" |
                 jq -r '
@@ -173,6 +184,7 @@ jobs:
               EP_MAP[$KEY]="$LINK"
               EP_META[$KEY]="$TID|$TNAME|$TYEAR|$S|$E|$TS"
             
+              # Show-level metadata (only once per show)
               SHOWKEY="show_${TID}"
               if [ -z "${SHOW_META[$SHOWKEY]}" ]; then
                 SHOW_META[$SHOWKEY]="$TID|$TNAME|$TYEAR"
@@ -188,6 +200,7 @@ jobs:
             
               continue
             fi
+
 
 
             ########################################################
