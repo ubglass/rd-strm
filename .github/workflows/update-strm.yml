@@ -339,7 +339,6 @@ jobs:
           echo "===================="
 
           ########################################################
-          ########################################################
           # BUILD TV SHOW NFO (SHOW LEVEL ONLY)
           ########################################################
           echo "== BUILDING TV SHOW NFO =="
@@ -437,30 +436,32 @@ jobs:
           # BUILD MOVIE OUTPUT
           ########################################################
           echo "== BUILDING MOVIE OUTPUT =="
-
+          
           TEMPLATE="templates/movie_template.nfo"
-
+          
           for KEY in "${!MOV_MAP[@]}"; do
             META="${MOV_META[$KEY]}"
             IFS='|' read MID MNAME MYEAR TS <<< "$META"
-
+          
             MV=$(safe "$MNAME")
             MD="site_root/Movies/${MV} (${MYEAR})"
             mkdir -p "$MD"
-
+          
             echo "[DEBUG] Creating movie folder: $MD"
-
+          
             STRM_PATH="$MD/${MV} (${MYEAR}).strm"
             echo "${MOV_MAP[$KEY]}" > "$STRM_PATH"
-
+          
+            # TMDb movie details
             DET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
             PLOT=$(echo "$DET" | jq -r '.overview // ""')
             POSTER=$(echo "$DET" | jq -r '.poster_path // ""')
             FANART=$(echo "$DET" | jq -r '.backdrop_path // ""')
-
+            RUNTIME=$(echo "$DET" | jq -r '.runtime // empty')   # minutes[web:89]
+          
             [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
             [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
-
+          
             NFO_PATH="$MD/${MV} (${MYEAR}).nfo"
             cp "$TEMPLATE" "$NFO_PATH"
             sed -i "s|{TITLE}|$(escape "$MNAME")|g" "$NFO_PATH"
@@ -469,7 +470,8 @@ jobs:
             sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$NFO_PATH"
             sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO_PATH"
             sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
-
+            sed -i "s|{RUNTIME}|$RUNTIME|g" "$NFO_PATH"
+          
             echo "[OK] Movie generated: $STRM_PATH + NFO: $NFO_PATH"
           done
 
