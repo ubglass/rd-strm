@@ -8,5 +8,6 @@
     <fanart>
         <thumb>{FANART_URL}</thumb>
     </fanart>
+    <runtime>{RUNTIME}</runtime>
     <plot>{PLOT}</plot>
 </movie>
