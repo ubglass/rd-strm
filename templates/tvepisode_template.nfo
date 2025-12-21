@@ -6,5 +6,6 @@
     <aired>{AIRDATE}</aired>
     <plot>{PLOT}</plot>
     <thumb>{THUMB_URL}</thumb>
+    <runtime>{RUNTIME}</runtime>
     <uniqueid type="tmdb">{TMDB_EPISODE_ID}</uniqueid>
 </episodedetails>
