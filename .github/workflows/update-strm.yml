@@ -3,7 +3,7 @@ name: RD STRM Builder (Final Stable Version)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
     
 permissions:
   contents: read
