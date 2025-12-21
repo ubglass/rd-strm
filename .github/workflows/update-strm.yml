@@ -357,17 +357,30 @@ jobs:
             SHOW_DIR="$TV_ROOT/${TNAME} (${TYEAR})"
             mkdir -p "$SHOW_DIR"
           
-            SHOW_NFO="$SHOW_DIR/tvshow.nfo"
+            # Fetch TMDB TV series details
+            SHOW_DET=$(curl -s "https://api.themoviedb.org/3/tv/$TID?api_key=$TMDB")
+            SHOW_PLOT=$(echo "$SHOW_DET" | jq -r '.overview // ""')
+            SHOW_POSTER=$(echo "$SHOW_DET" | jq -r '.poster_path // ""')
+            SHOW_FANART=$(echo "$SHOW_DET" | jq -r '.backdrop_path // ""')
           
-            cat > "$SHOW_NFO" <<EOF
-          <tvshow>
-            <title>${TNAME}</title>
-            <year>${TYEAR}</year>
-            <tmdbid>${TID}</tmdbid>
-          </tvshow>
-          EOF
+            [ "$SHOW_POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${SHOW_POSTER}" || POSTER_URL=""
+            [ "$SHOW_FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${SHOW_FANART}" || FANART_URL=""
+          
+            SHOW_NFO="$SHOW_DIR/tvshow.nfo"
+            TEMPLATE="templates/tvshow_template.nfo"  # Use your template
+            cp "$TEMPLATE" "$SHOW_NFO"
+          
+            # Replace all template placeholders
+            sed -i "s|{TITLE}|$(escape "$TNAME")|g" "$SHOW_NFO"
+            sed -i "s|{YEAR}|$TYEAR|g" "$SHOW_NFO"
+            sed -i "s|{TMDB_ID}|$TID|g" "$SHOW_NFO"
+            sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$SHOW_NFO"
+            sed -i "s|{FANART_URL}|$FANART_URL|g" "$SHOW_NFO"
+            sed -i "s|{PLOT}|$(escape "$SHOW_PLOT")|g" "$SHOW_NFO"
           
             echo "[OK] TV show NFO created: $SHOW_NFO"
+            echo "[DEBUG]  Poster: $POSTER_URL"
+            echo "[DEBUG]  Fanart: $FANART_URL"
           done
 
           ########################################################
