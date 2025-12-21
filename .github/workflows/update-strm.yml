@@ -371,7 +371,6 @@ jobs:
           done
 
           ########################################################
-          ########################################################
           # BUILD TV EPISODE STRM + NFO
           ########################################################
           echo "== BUILDING TV EPISODES =="
@@ -417,6 +416,14 @@ jobs:
               echo "[DEBUG]  NFO : $NFO_PATH"
               echo "$LINK" > "$STRM_PATH"
           
+              # Fetch episode details from TMDB for runtime
+              EP_DET=$(curl -s "https://api.themoviedb.org/3/tv/${TID}/season/${ES}/episode/${EE}?api_key=$TMDB")
+              EP_PLOT=$(echo "$EP_DET" | jq -r '.overview // ""')
+              EP_POSTER=$(echo "$EP_DET" | jq -r '.still_path // ""')
+              RUNTIME=$(echo "$EP_DET" | jq -r '.runtime // empty')  # minutes[web:89]
+          
+              [ "$EP_POSTER" != "" ] && EP_POSTER_URL="https://image.tmdb.org/t/p/original${EP_POSTER}" || EP_POSTER_URL=""
+          
               cat > "$NFO_PATH" <<EOF
           <episodedetails>
             <title>${EP_TITLE}</title>
@@ -425,12 +432,16 @@ jobs:
             <showtitle>${TNAME}</showtitle>
             <year>${ETYEAR}</year>
             <tmdbid>${ETID}</tmdbid>
+            <runtime>${RUNTIME}</runtime>
+            <plot>${EP_PLOT}</plot>
+            <thumb>${EP_POSTER_URL}</thumb>
           </episodedetails>
           EOF
           
-              echo "[OK] TV episode generated: $EP_TITLE"
+              echo "[OK] TV episode generated: $EP_TITLE (runtime: ${RUNTIME}m)"
             done
           done
+
 
           ########################################################
           # BUILD MOVIE OUTPUT
