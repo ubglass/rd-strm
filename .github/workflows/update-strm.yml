@@ -1,17 +1,16 @@
-name: RD STRM Builder (Final Stable Version)
+name: RD STRM Builder (Final Stable Version with Cleanup)
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
-    
+
 permissions:
   contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,462 +31,242 @@ jobs:
           echo "[DEBUG] RD JSON:"
           sed 's/^/ /' downloads.json
 
-      - name: Build STRM Library
+      - name: Build STRM Library with Cleanup
         run: |
           set +e
-
-          echo "== BUILDING LIBRARY =="
-
+          echo "== BUILDING LIBRARY WITH CLEANUP =="
+          
           TMDB="${{ secrets.TMDB_API_KEY }}"
-
           urlencode() { jq -nr --arg v "$1" '$v|@uri'; }
-          escape()   { echo "$1" | sed 's/%/%%/g'; }
-          safe()     { echo "$1" | sed 's#[^-_.a-zA-Z0-9 ()]#_#g'; }
-
-          # Correct timestamp cutoff
+          escape() { echo "$1" | sed 's/%/%%/g'; }
+          safe() { echo "$1" | sed 's#[^-_.a-zA-Z0-9 ()]#_#g'; }
+          
           CUTOFF=$(date -d "15 days ago" +%s)
           echo "[DEBUG] CUTOFF TS = $CUTOFF"
-
-          declare -A EP_MAP
-          declare -A EP_META
-          declare -A MOV_MAP
-          declare -A MOV_META
-          declare -A SHOW_META
-
+          
+          declare -A EP_MAP EP_META MOV_MAP MOV_META SHOW_META
+          
+          # === CLEANUP PHASE 1: Generate current keys ===
+          echo "== CLEANUP: Mapping current RD movies/TV =="
+          > current_keys.txt
+          
+          jq -r '.[] | select(.streamable=="1") | .filename' downloads.json | \
+          while read FILE; do
+            BASE=$(basename "$FILE")
+            NAME="${BASE%.*}"
+            
+            if [[ $NAME =~ [Ss][0-9]{1,2}[Ee][0-9]{1,2} ]]; then
+              RAW=$(echo "$NAME" | sed -E 's/[_\\.]/ /g' | sed -E 's/[Ss][0-9]{1,2}[Ee][0-9]{1,2}.*//' | sed 's/ */ /g; s/ $//')
+              YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
+              SHOW_SAFE=$(echo "$RAW" | sed 's/[^a-zA-Z0-9]/_/g')
+              [[ -n $YEAR ]] && SHOW_KEY="$SHOW_SAFE ($YEAR)" || SHOW_KEY="$SHOW_SAFE"
+              echo "keep-tv:$SHOW_KEY" >> current_keys.txt
+            else
+              RAW=$(echo "$NAME" | sed -E 's/[_\\.]/ /g' | sed 's/ */ /g; s/ $//')
+              YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])' | head -1)
+              [[ -n $YEAR ]] && CLEAN=$(echo "$RAW" | sed -E "s/$YEAR.*//") || CLEAN="$RAW"
+              CLEAN=$(echo "$CLEAN" | sed 's/ */ /g; s/ $//')
+              MV_SAFE=$(safe "$CLEAN")
+              MOV_KEY="${MV_SAFE} ($YEAR)"
+              echo "keep-movie:$MOV_KEY" >> current_keys.txt
+            fi
+          done
+          
+          echo "[DEBUG] Current keys: $(wc -l < current_keys.txt)"
+          
+          # === LOCAL CLEANUP: Remove stale folders ===
+          echo "== LOCAL CLEANUP =="
+          for DIR in site_root/Movies/*/; do
+            [ -d "$DIR" ] || continue
+            KEY=$(basename "$DIR")
+            if ! grep -q "keep-movie:$KEY" current_keys.txt 2>/dev/null; then
+              echo "[DELETE] Stale movie: $DIR"
+              rm -rf "$DIR"
+            fi
+          done
+          
+          for DIR in site_root/TV_Shows/*/; do
+            [ -d "$DIR" ] || continue
+            KEY=$(basename "$DIR")
+            if ! grep -q "keep-tv:$KEY" current_keys.txt 2>/dev/null; then
+              echo "[DELETE] Stale TV: $DIR"
+              rm -rf "$DIR"
+            fi
+          done
+          rm -f current_keys.txt
+          
+          # === ORIGINAL PARSING LOGIC ===
           echo "== START PARSING DOWNLOADS =="
-
-          # no subshell, arrays preserved
           while read -r DL; do
             echo ""
             echo "---------------- NEW ENTRY ----------------"
             echo "$DL" | sed 's/^/ /'
-
+            
             FILE=$(echo "$DL" | jq -r '.filename // ""')
             LINK=$(echo "$DL" | jq -r '.download // ""')
             STREAM=$(echo "$DL" | jq -r '.streamable // 0')
             GEN=$(echo "$DL" | jq -r '.generated // ""')
-
+            
             echo "[DEBUG] FILE=$FILE"
-            echo "[DEBUG] LINK=$LINK"
-            echo "[DEBUG] STREAMABLE=$STREAM"
-            echo "[DEBUG] GENERATED=$GEN"
-
-            # timestamp
             TS=$(echo "$GEN" | sed 's/\..*Z//; s/T/ /' | xargs -I{} date -d "{}" +%s 2>/dev/null || echo 0)
-            echo "[DEBUG] TS=$TS"
-
+            
             [ "$STREAM" != "1" ] && echo "[SKIP] Not streamable." && continue
             [ "$TS" -lt "$CUTOFF" ] && echo "[SKIP] Too old." && continue
-
+            
             BASE=$(basename "$FILE")
             EXT="${BASE##*.}"
             NAME="${BASE%.*}"
-
-            echo "[DEBUG] BASE=$BASE EXT=$EXT NAME=$NAME"
-
-            [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && echo "[SKIP] Unsupported extension." && continue
-
-            ########################################################
+            [[ ! "$EXT" =~ ^(mkv|mp4|avi|mov|webm)$ ]] && echo "[SKIP] Unsupported." && continue
+            
             # TV DETECTION
-            ########################################################
             if [[ "$NAME" =~ [Ss][0-9]{1,2}[Ee][0-9]{1,2} ]]; then
-              echo "[DEBUG] TV detection triggered."
-            
-              # Extract the SxxEyy chunk safely (e.g. S01E06)
               SE_BLOCK=$(echo "$NAME" | grep -oEi "S[0-9]{1,2}E[0-9]{1,2}" | head -1)
-            
-              # Season = digits after S, before E
               S=$(echo "$SE_BLOCK" | sed -E 's/^S([0-9]{1,2})E[0-9]{1,2}$/\1/I')
-              # Episode = digits after E
               E=$(echo "$SE_BLOCK" | sed -E 's/^S[0-9]{1,2}E([0-9]{1,2})$/\1/I')
-            
               S=$((10#$S))
               E=$((10#$E))
-            
-              echo "[DEBUG] Parsed S=$S E=$E"
-            
-              # Build raw show title by stripping everything from SxxEyy onwards
-              RAW=$(echo "$NAME" |
-                sed -E 's/[_\.]/ /g' |
-                sed -E 's/[Ss][0-9]{1,2}[Ee][0-9]{1,2}.*//' |
-                sed 's/  */ /g; s/ $//')
-            
-              echo "[DEBUG] RAW TV TITLE='$RAW'"
-            
-              # Optional year in the title (rare for shows, but keep your logic)
+              
+              RAW=$(echo "$NAME" | sed -E 's/[_\\.]/ /g' | sed -E 's/[Ss][0-9]{1,2}[Ee][0-9]{1,2}.*//' | sed 's/ */ /g; s/ $//')
               YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])')
-              echo "[DEBUG] YEAR=$YEAR"
-            
-              if [ -n "$YEAR" ]; then
-                SEARCH_TITLE=$(echo "$RAW" | sed -E "s/$YEAR//" | sed 's/  */ /g; s/ $//')
-              else
-                SEARCH_TITLE="$RAW"
-              fi
-            
+              [[ -n $YEAR ]] && SEARCH_TITLE=$(echo "$RAW" | sed -E "s/$YEAR//" | sed 's/ */ /g; s/ $//') || SEARCH_TITLE="$RAW"
+              
               ENC=$(urlencode "$SEARCH_TITLE")
-              echo "[DEBUG] TMDB QUERY='$SEARCH_TITLE' Year='$YEAR'"
-            
-              # Primary search (with year filter if present)
-              if [ -n "$YEAR" ]; then
-                SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC&first_air_date_year=$YEAR")
-              else
-                SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC")
-              fi
-            
-              echo "[DEBUG] TMDB TV RESPONSE (primary):"
-              echo "$SEARCH" | sed 's/^/ /'
-            
-              # If nothing when using year, retry without year
-              if [ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 ] && [ -n "$YEAR" ]; then
-                echo "[DEBUG] No TV result with year, retrying without year filter…"
-                SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC")
-                echo "[DEBUG] TMDB TV RESPONSE (no-year fallback):"
-                echo "$SEARCH" | sed 's/^/ /'
-              fi
-            
-              # Choose best show:
-              # 1) Exclude adult entries
-              # 2) Sort by popularity descending[web:31][web:66]
-              TID=$(
-                echo "$SEARCH" |
-                jq -r '
-                  .results
-                  | if length == 0 then [] else . end
-                  | map(select(.adult != true))
-                  | sort_by(-.popularity)
-                  | .[0].id // empty
-                '
-              )
-            
-              if [ -z "$TID" ]; then
-                echo "[DEBUG] No TMDB TV id found for '$SEARCH_TITLE' (YEAR='$YEAR')"
-                echo "[SKIP] No TMDB match."
-                continue
-              fi
-            
-              TNAME=$(
-                echo "$SEARCH" |
-                jq -r --argjson tid "$TID" '
-                  .results | map(select(.id == $tid)) | .[0].name
-                '
-              )
-              TYEAR=$(
-                echo "$SEARCH" |
-                jq -r --argjson tid "$TID" '
-                  .results | map(select(.id == $tid)) | .[0].first_air_date
-                ' | cut -c1-4
-              )
-            
-              echo "[OK] TV MATCH: $TNAME ($TYEAR)"
-            
+              [[ -n $YEAR ]] && SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC&first_air_date_year=$YEAR") || SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC")
+              
+              [[ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 && -n "$YEAR" ]] && SEARCH=$(curl -s "https://api.themoviedb.org/3/search/tv?api_key=$TMDB&query=$ENC")
+              
+              TID=$(echo "$SEARCH" | jq -r '.results | if length == 0 then [] else . end | map(select(.adult != true)) | sort_by(-.popularity) | .[0].id // empty')
+              [[ -z $TID ]] && echo "[SKIP] No TV match." && continue
+              
+              TNAME=$(echo "$SEARCH" | jq -r --argjson tid "$TID" '.results | map(select(.id == $tid)) | .[0].name')
+              TYEAR=$(echo "$SEARCH" | jq -r --argjson tid "$TID" '.results | map(select(.id == $tid)) | .[0].first_air_date' | cut -c1-4)
+              
               KEY="tv_${TID}_S${S}_E${E}"
               EP_MAP[$KEY]="$LINK"
               EP_META[$KEY]="$TID|$TNAME|$TYEAR|$S|$E|$TS"
-            
-              # Show-level metadata (only once per show)
+              
               SHOWKEY="show_${TID}"
-              if [ -z "${SHOW_META[$SHOWKEY]}" ]; then
-                SHOW_META[$SHOWKEY]="$TID|$TNAME|$TYEAR"
-                echo "[OK] Registered TV Show: $TNAME ($TYEAR) as key '$SHOWKEY'"
-              else
-                echo "[DEBUG] TV Show already registered for key '$SHOWKEY': ${SHOW_META[$SHOWKEY]}"
-              fi
-            
-              echo "[DEBUG] Current SHOW_META keys after this episode:"
-              for K in "${!SHOW_META[@]}"; do
-                echo "  SHOW_META[$K] = ${SHOW_META[$K]}"
-              done
-            
+              [[ -z ${SHOW_META[$SHOWKEY]} ]] && SHOW_META[$SHOWKEY]="$TID|$TNAME|$TYEAR"
               continue
             fi
-
-
-
-            ########################################################
+            
             # MOVIE DETECTION
-            ########################################################
-            echo "[DEBUG] Checking movie…"
-            
-            RAW=$(echo "$NAME" |
-              sed -E 's/[_\.]/ /g' |
-              sed 's/  */ /g; s/ $//')
-            
-            echo "[DEBUG] RAW MOVIE TITLE='$RAW'"
-            
+            RAW=$(echo "$NAME" | sed -E 's/[_\\.]/ /g' | sed 's/ */ /g; s/ $//')
             YEAR=$(echo "$RAW" | grep -oE '(19[0-9]{2}|20[0-3][0-9])' | head -1)
-            echo "[DEBUG] YEAR=$YEAR"
+            [[ -n $YEAR ]] && CLEAN=$(echo "$RAW" | sed -E "s/$YEAR.*//") || CLEAN="$RAW"
+            CLEAN=$(echo "$CLEAN" | sed 's/ */ /g; s/ $//')
             
-            if [ -n "$YEAR" ]; then
-              CLEAN=$(echo "$RAW" | sed -E "s/$YEAR.*//")
-            else
-              CLEAN="$RAW"
-            fi
-            
-            CLEAN=$(echo "$CLEAN" | sed 's/  */ /g; s/ $//')
-            echo "[DEBUG] BASE CLEAN TITLE='$CLEAN'"
-            
-            # Version with possible language/source tags stripped ONLY at the end
-            STRIPPED=$(echo "$CLEAN" | sed -E '
-              s/[[:space:]]+(- )?(Hindi|Hin|HIN)$/ /Ig;
-              s/[[:space:]]+(- )?(English|Eng)$/ /Ig;
-              s/[[:space:]]+(- )?(Spanish|Spa|ESP)$/ /Ig;
-              s/[[:space:]]+(- )?(Tamil|Tam|TAM)$/ /Ig;
-              s/[[:space:]]+(- )?(Malayalam|Mal)$/ /Ig;
-              s/[[:space:]]+(- )?(Telugu|Tel|TEL)$/ /Ig;
-              s/[[:space:]]+(- )?(Kannada|Kan)$/ /Ig;
-              s/[[:space:]]+(- )?(Dual Audio|Multi Audio|Dubbed)$/ /Ig;
-              s/[[:space:]]+(- )?(Atmos|ATMOS)$/ /Ig;
-            ')
-            STRIPPED=$(echo "$STRIPPED" | sed 's/  */ /g; s/ $//')
-            
-            echo "[DEBUG] STRIPPED TITLE='$STRIPPED'"
-            
-            # Helper: perform TMDB search with optional year, keep raw JSON in $SEARCH
             tmdb_search() {
-              local QUERY="$1"
-              local Y="$2"
-              local ENC
-              ENC=$(urlencode "$QUERY")
-            
-              if [ -n "$Y" ]; then
-                curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC&year=$Y"
-              else
-                curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC"
-              fi
+              local ENC=$(urlencode "$1")
+              [[ -n $2 ]] && curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC&year=$2" || curl -s "https://api.themoviedb.org/3/search/movie?api_key=$TMDB&query=$ENC"
             }
             
-            # First try with original CLEAN
-            echo "[DEBUG] TMDB MOVIE QUERY (primary)='$CLEAN' YEAR='$YEAR'"
             SEARCH=$(tmdb_search "$CLEAN" "$YEAR")
+            [[ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 && -n "$YEAR" ]] && SEARCH=$(tmdb_search "$CLEAN" "")
             
-            echo "[DEBUG] TMDB MOVIE RESPONSE (primary):"
-            echo "$SEARCH" | sed 's/^/ /'
+            MID=$(echo "$SEARCH" | jq -r '.results | if length == 0 then [] else . end | (map(select(.video == false)) + .) | unique_by(.id) | sort_by(-.popularity) | .[0].id // empty')
+            [[ -z $MID ]] && echo "[SKIP] No movie match." && continue
             
-            # If primary with year returns no results, retry without year
-            if [ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 ] && [ -n "$YEAR" ]; then
-              echo "[DEBUG] No result with year for CLEAN, retrying without year filter…"
-              SEARCH=$(tmdb_search "$CLEAN" "")
-              echo "[DEBUG] TMDB MOVIE RESPONSE (primary, no-year):"
-              echo "$SEARCH" | sed 's/^/ /'
-            fi
-            
-            # Fallback 1: try STRIPPED (with same year logic) if it differs
-            if [ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 ] && [ "$STRIPPED" != "$CLEAN" ]; then
-              echo "[DEBUG] No match with CLEAN, retrying with STRIPPED…"
-              SEARCH=$(tmdb_search "$STRIPPED" "$YEAR")
-              echo "[DEBUG] TMDB MOVIE RESPONSE (stripped):"
-              echo "$SEARCH" | sed 's/^/ /'
-            
-              if [ "$(echo "$SEARCH" | jq '.results | length')" -eq 0 ] && [ -n "$YEAR" ]; then
-                echo "[DEBUG] No result with year for STRIPPED, retrying without year filter…"
-                SEARCH=$(tmdb_search "$STRIPPED" "")
-                echo "[DEBUG] TMDB MOVIE RESPONSE (stripped, no-year):"
-                echo "$SEARCH" | sed 's/^/ /'
-              fi
-            fi
-            
-            # Choose best candidate instead of results[0]:
-            # 1) Prefer video == false (real movies)
-            # 2) Sort by popularity descending (TMDB's relevance metric)[web:31]
-            MID=$(
-              echo "$SEARCH" |
-              jq -r '
-                .results
-                | if length == 0 then [] else . end
-                | (map(select(.video == false)) + .)
-                | unique_by(.id)
-                | sort_by(-.popularity)
-                | .[0].id // empty
-              '
-            )
-            
-            if [ -z "$MID" ]; then
-              echo "[DEBUG] No TMDB id found. RAW='$RAW' CLEAN='$CLEAN' YEAR='$YEAR'"
-              echo "[DEBUG] Final TMDB SEARCH payload (first few results):"
-              echo "$SEARCH" | jq '.results[0:5] | .[] | {id, title, release_date, original_language, video, popularity}' 2>/dev/null
-              echo "[SKIP] No movie match even after fallbacks."
-              continue
-            fi
-            
-            # Derive MNAME and MYEAR from the chosen MID
-            MNAME=$(
-              echo "$SEARCH" |
-              jq -r --argjson mid "$MID" '
-                .results | map(select(.id == $mid)) | .[0].title
-              '
-            )
-            MYEAR=$(
-              echo "$SEARCH" |
-              jq -r --argjson mid "$MID" '
-                .results | map(select(.id == $mid)) | .[0].release_date
-              ' | cut -c1-4
-            )
-            
-            echo "[OK] MOVIE MATCH: $MNAME ($MYEAR)"
+            MNAME=$(echo "$SEARCH" | jq -r --argjson mid "$MID" '.results | map(select(.id == $mid)) | .[0].title')
+            MYEAR=$(echo "$SEARCH" | jq -r --argjson mid "$MID" '.results | map(select(.id == $mid)) | .[0].release_date' | cut -c1-4)
             
             KEY="movie_${MID}"
             MOV_MAP[$KEY]="$LINK"
             MOV_META[$KEY]="$MID|$MNAME|$MYEAR|$TS"
-
-
           done < <(jq -c 'if type=="array" then .[] else . end' downloads.json)
-
-          echo ""
+          
           echo "== SUMMARY =="
           echo "TV EPISODES: ${#EP_MAP[@]}"
           echo "MOVIES: ${#MOV_MAP[@]}"
-          echo "===================="
-
-          ########################################################
-          # BUILD TV SHOW NFO (SHOW LEVEL ONLY)
-          ########################################################
-          echo "== BUILDING TV SHOW NFO =="
-          echo "[DEBUG] SHOW_META size: ${#SHOW_META[@]}"
           
+          # BUILD TV SHOWS
+          echo "== BUILDING TV SHOW NFO =="
           TV_ROOT="site_root/TV_Shows"
           mkdir -p "$TV_ROOT"
-          
           for SHOWKEY in "${!SHOW_META[@]}"; do
-            # SHOW_META[show_<TID>] = "<TID>|<TNAME>|<TYEAR>"
             IFS='|' read -r TID TNAME TYEAR <<< "${SHOW_META[$SHOWKEY]}"
-          
-            echo "[DEBUG] SHOW_META[$SHOWKEY] = ${SHOW_META[$SHOWKEY]}"
-            echo "[DEBUG] Building show-level NFO for $TNAME ($TYEAR), TID=$TID"
-          
             SHOW_DIR="$TV_ROOT/${TNAME} (${TYEAR})"
             mkdir -p "$SHOW_DIR"
-          
-            # Fetch TMDB TV series details
+            
             SHOW_DET=$(curl -s "https://api.themoviedb.org/3/tv/$TID?api_key=$TMDB")
             SHOW_PLOT=$(echo "$SHOW_DET" | jq -r '.overview // ""')
             SHOW_POSTER=$(echo "$SHOW_DET" | jq -r '.poster_path // ""')
             SHOW_FANART=$(echo "$SHOW_DET" | jq -r '.backdrop_path // ""')
-          
-            [ "$SHOW_POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${SHOW_POSTER}" || POSTER_URL=""
-            [ "$SHOW_FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${SHOW_FANART}" || FANART_URL=""
-          
+            [[ "$SHOW_POSTER" != "" ]] && POSTER_URL="https://image.tmdb.org/t/p/original${SHOW_POSTER}" || POSTER_URL=""
+            [[ "$SHOW_FANART" != "" ]] && FANART_URL="https://image.tmdb.org/t/p/original${SHOW_FANART}" || FANART_URL=""
+            
             SHOW_NFO="$SHOW_DIR/tvshow.nfo"
-            TEMPLATE="templates/tvshow_template.nfo"  # Use your template
-            cp "$TEMPLATE" "$SHOW_NFO"
-          
-            # Replace all template placeholders
+            cp "templates/tvshow_template.nfo" "$SHOW_NFO"
             sed -i "s|{TITLE}|$(escape "$TNAME")|g" "$SHOW_NFO"
             sed -i "s|{YEAR}|$TYEAR|g" "$SHOW_NFO"
             sed -i "s|{TMDB_ID}|$TID|g" "$SHOW_NFO"
             sed -i "s|{POSTER_URL}|$POSTER_URL|g" "$SHOW_NFO"
             sed -i "s|{FANART_URL}|$FANART_URL|g" "$SHOW_NFO"
             sed -i "s|{PLOT}|$(escape "$SHOW_PLOT")|g" "$SHOW_NFO"
-          
-            echo "[OK] TV show NFO created: $SHOW_NFO"
-            echo "[DEBUG]  Poster: $POSTER_URL"
-            echo "[DEBUG]  Fanart: $FANART_URL"
           done
-
-          ########################################################
-          # BUILD TV EPISODE STRM + NFO
-          ########################################################
+          
+          # BUILD TV EPISODES
           echo "== BUILDING TV EPISODES =="
-          echo "[DEBUG] EP_MAP size: ${#EP_MAP[@]}"
-          
-          TV_ROOT="site_root/TV_Shows"
-          mkdir -p "$TV_ROOT"
-          
-          # Loop per show, then its episodes
           for SHOWKEY in "${!SHOW_META[@]}"; do
             IFS='|' read -r TID TNAME TYEAR <<< "${SHOW_META[$SHOWKEY]}"
-          
-            echo "[DEBUG] Processing show $TNAME ($TYEAR), TID=$TID"
-          
             SHOW_DIR="$TV_ROOT/${TNAME} (${TYEAR})"
             mkdir -p "$SHOW_DIR"
-          
-            # Iterate over all episodes, pick those belonging to this TID
+            
             for EPKEY in "${!EP_MAP[@]}"; do
-              # EPKEY format: tv_${TID}_S${S}_E${E}
-              if [[ "$EPKEY" != tv_"${TID}"_* ]]; then
-                continue
-              fi
-          
-              # EP_META[tv_<TID>_S<S>_E<E>] = "<TID>|<TNAME>|<TYEAR>|<S>|<E>|<TS>"
+              [[ "$EPKEY" != tv_"${TID}"_* ]] && continue
               IFS='|' read -r ETID ETNAME ETYEAR ES EE ETS <<< "${EP_META[$EPKEY]}"
-          
               SEASON_PAD=$(printf "%02d" "$ES")
               EP_PAD=$(printf "%02d" "$EE")
-          
               SEASON_DIR="$SHOW_DIR/Season $SEASON_PAD"
               mkdir -p "$SEASON_DIR"
-          
               EP_TITLE="${TNAME} S${SEASON_PAD}E${EP_PAD}"
-          
               STRM_PATH="$SEASON_DIR/${EP_TITLE}.strm"
               NFO_PATH="$SEASON_DIR/${EP_TITLE}.nfo"
-          
-              LINK="${EP_MAP[$EPKEY]}"
-          
-              echo "[DEBUG] Creating TV episode: $EP_TITLE"
-              echo "[DEBUG]  STRM: $STRM_PATH"
-              echo "[DEBUG]  NFO : $NFO_PATH"
-              echo "$LINK" > "$STRM_PATH"
-          
-              # Fetch episode details from TMDB for runtime
+              echo "${EP_MAP[$EPKEY]}" > "$STRM_PATH"
+              
               EP_DET=$(curl -s "https://api.themoviedb.org/3/tv/${TID}/season/${ES}/episode/${EE}?api_key=$TMDB")
               EP_PLOT=$(echo "$EP_DET" | jq -r '.overview // ""')
               EP_POSTER=$(echo "$EP_DET" | jq -r '.still_path // ""')
-              RUNTIME=$(echo "$EP_DET" | jq -r '.runtime // empty')  # minutes[web:89]
-          
-              [ "$EP_POSTER" != "" ] && EP_POSTER_URL="https://image.tmdb.org/t/p/original${EP_POSTER}" || EP_POSTER_URL=""
-          
-              cat > "$NFO_PATH" <<EOF
-          <episodedetails>
-            <title>${EP_TITLE}</title>
-            <season>${ES}</season>
-            <episode>${EE}</episode>
-            <showtitle>${TNAME}</showtitle>
-            <year>${ETYEAR}</year>
-            <tmdbid>${ETID}</tmdbid>
-            <runtime>${RUNTIME}</runtime>
-            <plot>${EP_PLOT}</plot>
-            <thumb>${EP_POSTER_URL}</thumb>
-          </episodedetails>
-          EOF
-          
-              echo "[OK] TV episode generated: $EP_TITLE (runtime: ${RUNTIME}m)"
+              RUNTIME=$(echo "$EP_DET" | jq -r '.runtime // empty')
+              [[ "$EP_POSTER" != "" ]] && EP_POSTER_URL="https://image.tmdb.org/t/p/original${EP_POSTER}" || EP_POSTER_URL=""
+              
+              cat > "$NFO_PATH" << EOF
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<episodedetails>
+  <title>$EP_TITLE</title>
+  <season>$ES</season>
+  <episode>$EE</episode>
+  <showtitle>$TNAME</showtitle>
+  <year>$ETYEAR</year>
+  <tmdbid>$ETID</tmdbid>
+  <runtime>$RUNTIME</runtime>
+  <plot>$EP_PLOT</plot>
+  <thumb>$EP_POSTER_URL</thumb>
+</episodedetails>
+EOF
             done
           done
-
-
-          ########################################################
-          # BUILD MOVIE OUTPUT
-          ########################################################
-          echo "== BUILDING MOVIE OUTPUT =="
           
-          TEMPLATE="templates/movie_template.nfo"
-          
+          # BUILD MOVIES
+          echo "== BUILDING MOVIES =="
           for KEY in "${!MOV_MAP[@]}"; do
-            META="${MOV_META[$KEY]}"
-            IFS='|' read MID MNAME MYEAR TS <<< "$META"
-          
+            IFS='|' read MID MNAME MYEAR TS <<< "${MOV_META[$KEY]}"
             MV=$(safe "$MNAME")
             MD="site_root/Movies/${MV} (${MYEAR})"
             mkdir -p "$MD"
-          
-            echo "[DEBUG] Creating movie folder: $MD"
-          
             STRM_PATH="$MD/${MV} (${MYEAR}).strm"
             echo "${MOV_MAP[$KEY]}" > "$STRM_PATH"
-          
-            # TMDb movie details
+            
             DET=$(curl -s "https://api.themoviedb.org/3/movie/$MID?api_key=$TMDB")
             PLOT=$(echo "$DET" | jq -r '.overview // ""')
             POSTER=$(echo "$DET" | jq -r '.poster_path // ""')
             FANART=$(echo "$DET" | jq -r '.backdrop_path // ""')
-            RUNTIME=$(echo "$DET" | jq -r '.runtime // empty')   # minutes[web:89]
-          
-            [ "$POSTER" != "" ] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
-            [ "$FANART" != "" ] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
-          
+            RUNTIME=$(echo "$DET" | jq -r '.runtime // empty')
+            [[ "$POSTER" != "" ]] && POSTER_URL="https://image.tmdb.org/t/p/original${POSTER}" || POSTER_URL=""
+            [[ "$FANART" != "" ]] && FANART_URL="https://image.tmdb.org/t/p/original${FANART}" || FANART_URL=""
+            
             NFO_PATH="$MD/${MV} (${MYEAR}).nfo"
-            cp "$TEMPLATE" "$NFO_PATH"
+            cp "templates/movie_template.nfo" "$NFO_PATH"
             sed -i "s|{TITLE}|$(escape "$MNAME")|g" "$NFO_PATH"
             sed -i "s|{YEAR}|$MYEAR|g" "$NFO_PATH"
             sed -i "s|{TMDB_ID}|$MID|g" "$NFO_PATH"
@@ -495,32 +274,47 @@ jobs:
             sed -i "s|{FANART_URL}|$FANART_URL|g" "$NFO_PATH"
             sed -i "s|{PLOT}|$(escape "$PLOT")|g" "$NFO_PATH"
             sed -i "s|{RUNTIME}|$RUNTIME|g" "$NFO_PATH"
+          done[file:1]
+
+      - name: Koofr Full Sync with Cleanup
+        run: |
+          echo "== KOOFR FULL SYNC WITH CLEANUP =="
+          cd site_root
           
-            echo "[OK] Movie generated: $STRM_PATH + NFO: $NFO_PATH"
+          encode() { echo "$1" | sed 's/ /%20/g; s/\((\|)\)/%\1/g'; }
+          KOFR_URL="${{ secrets.KOFR_URL }}"
+          KOFR_USER="${{ secrets.KOFR_USER }}"
+          KOFR_PASS="${{ secrets.KOFR_PASS }}"
+          
+          # === STEP 1: Create local directories ===
+          find . -type d | tail -n +2 | while read D; do
+            ENC=$(encode "${D#./}")
+            echo "[KOFR] MKCOL $ENC/"
+            timeout 30 curl -s -u "$KOFR_USER:$KOFR_PASS" -X MKCOL "$KOFR_URL$ENC/" || echo "[WARN] MKCOL $ENC"
           done
-
-            - name: Upload to Koofr
-            run: |
-              echo "== UPLOAD TO KOOFR =="
-              cd site_root
           
-              encode() { echo "$1" | sed 's/ /%20/g'; }
+          # === STEP 2: Upload local files ===
+          find . -type f | while read F; do
+            ENC=$(encode "${F#./}")
+            echo "[KOFR] PUT $ENC"
+            timeout 60 curl -s -u "$KOFR_USER:$KOFR_PASS" -T "$F" "$KOFR_URL$ENC" || echo "[WARN] PUT $ENC"
+          done
           
-              # Directories
-              find . -type d | while read D; do
-                ENC=$(encode "${D#./}")
-                echo "[KOFR] MKCOL $ENC/"
-                timeout 30 curl -s -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-                  -X MKCOL "${{ secrets.KOFR_URL }}$ENC/" || echo "[WARN] MKCOL failed for $ENC"
-              done
+          # === STEP 3: FULL CLEANUP - Delete remote orphans ===
+          echo "== KOOFR ORPHAN CLEANUP =="
+          # Get ALL remote contents via PROPFIND
+          REMOTE_LIST=$(timeout 30 curl -s -u "$KOFR_USER:$KOFR_PASS" -X PROPFIND -H "Depth: infinity" "$KOFR_URL" | grep -oP 'href="[^"]+"' | sed 's/href="//; s/"$//' | grep -E '(Movies|TV_Shows)/')
           
-              # Files
-              find . -type f | while read F; do
-                ENC=$(encode "${F#./}")
-                echo "[KOFR] PUT $ENC"
-                timeout 60 curl -s -u "${{ secrets.KOFR_USER }}:${{ secrets.KOFR_PASS }}" \
-                  -T "$F" "${{ secrets.KOFR_URL }}$ENC" || echo "[WARN] PUT failed for $ENC"
-              done
+          echo "$REMOTE_LIST" | while read REMOTE_PATH; do
+            [[ -z $REMOTE_PATH ]] && continue
+            LOCAL_PATH="site_root/$REMOTE_PATH"
+            
+            # Skip if still exists locally (new content)
+            [[ -e $LOCAL_PATH ]] && continue
+            
+            echo "[DELETE] Orphan on Koofr: $REMOTE_PATH"
+            ENC=$(encode "$REMOTE_PATH")
+            timeout 30 curl -s -u "$KOFR_USER:$KOFR_PASS" -X DELETE "$KOFR_URL$ENC" || echo "[WARN] DELETE failed: $ENC"
+          done
           
-              echo "== COMPLETE =="
-
+          echo "== KOOFR SYNC COMPLETE =="[file:1]
